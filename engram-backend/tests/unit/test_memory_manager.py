@@ -1,0 +1,159 @@
+"""Unit tests for memory manager"""
+
+from unittest.mock import AsyncMock, Mock, patch
+
+import numpy as np
+import pytest
+
+from models.memory import ConversationTurn, MemoryQuery
+from services.memory_manager import MemoryManager
+
+
+class TestMemoryManager:
+    """Test cases for MemoryManager"""
+
+    @pytest.fixture
+    def memory_manager(self):
+        """Create memory manager instance"""
+        return MemoryManager()
+
+    @pytest.fixture
+    def mock_db_session(self):
+        """Create mock database session"""
+        session = AsyncMock()
+        session.execute = AsyncMock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def sample_embedding(self):
+        """Create sample embedding"""
+        return np.random.rand(1536).astype(np.float32)
+
+    @pytest.fixture
+    def sample_turn(self):
+        """Create sample conversation turn"""
+        return ConversationTurn(
+            user_message="I am vegetarian and avoid dairy",
+            user_id="test-user",
+            conversation_id="test-conversation",
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_conversation_turn_add_operation(
+        self, memory_manager, mock_db_session, sample_turn
+    ):
+        """Test processing conversation turn with ADD operation"""
+
+        with (
+            patch("services.memory_manager.embedding_service") as mock_embedding,
+            patch("services.memory_manager.llm_service"),
+            patch.object(memory_manager, "_get_user_memories", return_value=[]),
+            patch.object(memory_manager, "_add_memory", return_value=1),
+            patch.object(memory_manager, "_extract_and_store_entities"),
+        ):
+            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+
+            result = await memory_manager.process_conversation_turn(sample_turn, mock_db_session)
+
+            assert result.operation_performed == "ADD"
+            assert result.memory_id == 1
+            assert result.processing_time_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_process_conversation_turn_update_operation(
+        self, memory_manager, mock_db_session, sample_turn
+    ):
+        """Test processing conversation turn with UPDATE operation"""
+
+        # Mock existing memory
+        mock_memory = Mock()
+        mock_memory.text = "I am vegetarian"
+        mock_memory.id = 1
+
+        with (
+            patch("services.memory_manager.embedding_service") as mock_embedding,
+            patch("services.memory_manager.llm_service") as mock_llm,
+            patch.object(memory_manager, "_get_user_memories", return_value=[mock_memory]),
+            patch.object(memory_manager, "_update_memory"),
+            patch.object(memory_manager, "_extract_and_store_entities"),
+        ):
+            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+            mock_llm.classify_memory_operation.return_value = {
+                "operation": "UPDATE",
+                "related_memory_indices": [0],
+            }
+
+            result = await memory_manager.process_conversation_turn(sample_turn, mock_db_session)
+
+            assert result.operation_performed == "UPDATE"
+            assert result.memory_id == 1
+
+    @pytest.mark.asyncio
+    async def test_retrieve_memories(self, memory_manager, mock_db_session):
+        """Test memory retrieval"""
+
+        # Mock user memories
+        mock_memory = Mock()
+        mock_memory.embedding = np.random.rand(1536).tolist()
+        mock_memory.timestamp = Mock()
+        mock_memory.timestamp.timestamp.return_value = 1234567890
+        mock_memory.importance_score = 0.5
+        mock_memory.access_count = 5
+
+        with (
+            patch.object(memory_manager, "_get_user_memories", return_value=[mock_memory]),
+            patch.object(memory_manager, "_update_access_count"),
+            patch("services.memory_manager.embedding_service") as mock_embedding,
+        ):
+            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+            mock_embedding.calculate_similarity.return_value = 0.8
+
+            query = MemoryQuery(
+                query="What are my dietary preferences?", user_id="test-user", top_k=5
+            )
+
+            result = await memory_manager.retrieve_memories(query, mock_db_session)
+
+            assert result.query == query.query
+            assert result.total_found >= 0
+            assert result.processing_time_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_retrieve_memories_empty_store(self, memory_manager, mock_db_session):
+        """Test memory retrieval with empty memory store"""
+
+        with (
+            patch.object(memory_manager, "_get_user_memories", return_value=[]),
+            patch("services.memory_manager.embedding_service") as mock_embedding,
+        ):
+            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+
+            query = MemoryQuery(
+                query="What are my dietary preferences?", user_id="test-user", top_k=5
+            )
+
+            result = await memory_manager.retrieve_memories(query, mock_db_session)
+
+            assert result.query == query.query
+            assert result.total_found == 0
+            assert len(result.memories) == 0
+
+    def test_similarity_threshold_configuration(self, memory_manager):
+        """Test similarity threshold configuration"""
+        assert memory_manager.similarity_threshold == 0.75
+
+        # Test with custom threshold
+        custom_manager = MemoryManager()
+        custom_manager.similarity_threshold = 0.8
+        assert custom_manager.similarity_threshold == 0.8
+
+    def test_max_memories_per_user_configuration(self, memory_manager):
+        """Test max memories per user configuration"""
+        assert memory_manager.max_memories_per_user == 10000
+
+        # Test with custom limit
+        custom_manager = MemoryManager()
+        custom_manager.max_memories_per_user = 5000
+        assert custom_manager.max_memories_per_user == 5000

@@ -1,0 +1,57 @@
+# Combined Requirements File
+# Build System
+setuptools>=75.0
+wheel>=0.42.0
+
+# Core Framework & Language
+fastapi>=0.104.1
+pydantic[email]>=2.8.0
+pydantic-settings>=2.0.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Database Stack
+asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.0.25
+alembic>=1.13.1
+psycopg2-binary>=2.9.9
+neo4j>=5.15.0
+redis>=4.5.2,<5.0.0
+
+# AI & ML Components
+ollama>=0.4.0
+httpx>=0.27.0
+sentence-transformers>=2.7.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+
+# Async Task Processing
+celery[redis]>=5.3.4
+flower>=2.0.1
+
+# Infrastructure & Deployment
+gunicorn==21.2.0
+python-dotenv==1.0.0
+
+# Monitoring & Observability
+prometheus-client==0.19.0
+loguru==0.7.2
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Utilities
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Development tools
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+mypy==1.7.1
+pre-commit==3.6.0
+
+# Testing
+pytest-cov==4.1.0
+pytest-mock==3.12.0

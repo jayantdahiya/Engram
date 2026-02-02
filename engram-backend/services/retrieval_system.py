@@ -1,4 +1,39 @@
-"""ACAN (Attention-based Context-Aware Network) retrieval system"""
+"""ACAN (Attention-based Context-Aware Network) retrieval system
+
+Performance Note (Benchmark: Feb 2026, Raspberry Pi 5):
+========================================================
+Current ACAN retrieval scales linearly O(n) with memory count:
+- 100 memories:   ~7ms   (160 req/s)
+- 1,000 memories: ~80ms  (16 req/s)
+- 10,000 memories: ~620ms (1.6 req/s)
+
+Pure similarity search is ~60x faster at scale.
+
+OPTIMIZATION OPPORTUNITIES:
+1. **Two-stage retrieval** (recommended):
+   - Stage 1: Fast vector similarity to get top-100 candidates
+   - Stage 2: ACAN scoring only on candidates
+   - Expected: 10-20ms even at 100K memories
+
+2. **Batch matrix operations**:
+   - Replace per-memory loops with batched numpy/torch operations
+   - Stack all embeddings into matrix, compute attention in one matmul
+   - Expected: 5-10x speedup
+
+3. **Approximate nearest neighbor (ANN)**:
+   - Use FAISS, Annoy, or ScaNN for initial filtering
+   - Reduces candidate set before expensive scoring
+
+4. **Caching**:
+   - Cache projected query vectors
+   - Pre-compute and cache memory key projections on insert
+
+5. **GPU acceleration**:
+   - Move projection matrices to GPU (torch/cupy)
+   - Batch process with CUDA kernels
+
+See benchmarks/README.md for detailed performance data.
+"""
 
 import time
 from typing import Any
@@ -10,7 +45,11 @@ from services.embedding_service import embedding_service
 
 
 class ACANRetrievalSystem:
-    """Enhanced retrieval system combining ACAN attention with Mem0 deployment signals"""
+    """Enhanced retrieval system combining ACAN attention with Mem0 deployment signals
+    
+    Note: Current implementation is O(n) per query. For production use with >1000 memories,
+    consider implementing two-stage retrieval (see module docstring for optimization guide).
+    """
 
     def __init__(self, attention_dim: int = 64):
         self.attention_dim = attention_dim
@@ -29,12 +68,18 @@ class ACANRetrievalSystem:
         current_time: float,
         user_context: dict[str, Any] | None = None,
     ) -> np.ndarray:
-        """Compute composite relevance scores using multiple signals"""
+        """Compute composite relevance scores using multiple signals
+        
+        TODO: Optimize for scale (see module docstring):
+        - Batch matrix operations instead of per-memory loops
+        - Pre-filter with fast vector search before scoring
+        """
 
         if not memories:
             return np.array([])
 
         # Extract embeddings and metadata
+        # TODO: Stack into matrix for batched operations
         memory_embeddings = [np.array(mem["embedding"]) for mem in memories]
         timestamps = [mem["timestamp"] for mem in memories]
         importance_scores = [mem.get("importance_score", 0.0) for mem in memories]
@@ -44,6 +89,7 @@ class ACANRetrievalSystem:
         attention_scores = await self._compute_attention(query_embedding, memory_embeddings)
 
         # 2. Cosine similarity scores
+        # TODO: Vectorize with matrix multiplication: scores = embeddings_matrix @ query
         cosine_scores = np.array(
             [
                 await embedding_service.calculate_similarity(query_embedding, mem_emb)
@@ -84,11 +130,22 @@ class ACANRetrievalSystem:
     async def _compute_attention(
         self, query_embedding: np.ndarray, memory_embeddings: list[np.ndarray]
     ) -> np.ndarray:
-        """Compute cross-attention between query and memories"""
+        """Compute cross-attention between query and memories
+        
+        TODO: Vectorize this entire function:
+        ```python
+        # Batched version (10x faster):
+        memory_matrix = np.vstack(memory_embeddings)  # (n, 1536)
+        keys = memory_matrix @ self.key_projection    # (n, 64)
+        query_proj = query_embedding @ self.query_projection  # (64,)
+        scores = keys @ query_proj / np.sqrt(self.attention_dim)  # (n,)
+        ```
+        """
 
         # Project query to attention space
         query_projected = np.dot(query_embedding, self.query_projection)
 
+        # TODO: Replace loop with batched matmul (see docstring above)
         attention_scores = []
         for memory_embedding in memory_embeddings:
             # Project memory to key space

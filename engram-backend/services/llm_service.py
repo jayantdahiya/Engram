@@ -1,4 +1,4 @@
-"""LLM service for Ollama API interactions"""
+"""LLM service with support for multiple providers (Ollama and OpenAI)"""
 
 import json
 from typing import Any
@@ -9,8 +9,20 @@ from core.config import settings
 from core.logging import logger
 
 
-class LLMService:
-    """Service for interacting with Ollama LLM APIs"""
+class BaseLLMProvider:
+    """Base class for LLM providers"""
+
+    async def generate_response(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        raise NotImplementedError
+
+
+class OllamaProvider(BaseLLMProvider):
+    """Ollama LLM provider for local inference"""
 
     def __init__(self):
         self.base_url = settings.ollama_base_url
@@ -21,63 +33,108 @@ class LLMService:
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         max_tokens: int | None = None,
-        stream: bool = False,
     ) -> str:
         """Generate response using Ollama Chat API"""
         try:
-            # Convert messages to Ollama format
-            ollama_messages = []
-            for msg in messages:
-                if msg["role"] == "system":
-                    ollama_messages.append({"role": "system", "content": msg["content"]})
-                elif msg["role"] == "user":
-                    ollama_messages.append({"role": "user", "content": msg["content"]})
-                elif msg["role"] == "assistant":
-                    ollama_messages.append({"role": "assistant", "content": msg["content"]})
-
             payload = {
                 "model": self.model,
-                "messages": ollama_messages,
+                "messages": messages,
                 "temperature": temperature,
-                "stream": stream
+                "stream": False,
             }
 
             if max_tokens:
                 payload["num_predict"] = max_tokens
 
             async with httpx.AsyncClient() as client:
-                if stream:
-                    # Handle streaming response
-                    content = ""
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/api/chat",
-                        json=payload,
-                        timeout=60.0
-                    ) as response:
-                        async for line in response.aiter_lines():
-                            if line.strip():
-                                try:
-                                    chunk = json.loads(line)
-                                    if "message" in chunk and "content" in chunk["message"]:
-                                        content += chunk["message"]["content"]
-                                except json.JSONDecodeError:
-                                    continue
-                    return content
-                else:
-                    # Handle regular response
-                    response = await client.post(
-                        f"{self.base_url}/api/chat",
-                        json=payload,
-                        timeout=60.0
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    return result["message"]["content"]
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result["message"]["content"]
 
         except Exception as e:
-            logger.error(f"LLM response generation failed: {e}")
+            logger.error(f"Ollama response generation failed: {e}")
             raise
+
+
+class OpenAIProvider(BaseLLMProvider):
+    """OpenAI LLM provider for cloud inference"""
+
+    def __init__(self):
+        self.api_key = settings.openai_api_key
+        self.model = settings.openai_llm_model
+        self.base_url = "https://api.openai.com/v1"
+
+        if not self.api_key:
+            logger.warning("OpenAI API key not configured")
+
+    async def generate_response(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Generate response using OpenAI Chat API"""
+        try:
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            logger.error(f"OpenAI response generation failed: {e}")
+            raise
+
+
+class LLMService:
+    """Service for interacting with LLM APIs (supports Ollama and OpenAI)"""
+
+    def __init__(self):
+        self.provider = self._init_provider()
+        logger.info(f"LLM Service initialized with provider: {settings.llm_provider}")
+
+    def _init_provider(self) -> BaseLLMProvider:
+        """Initialize the appropriate LLM provider"""
+        provider_name = settings.llm_provider.lower()
+
+        if provider_name == "openai":
+            return OpenAIProvider()
+        elif provider_name == "ollama":
+            return OllamaProvider()
+        else:
+            logger.warning(f"Unknown provider '{provider_name}', defaulting to Ollama")
+            return OllamaProvider()
+
+    async def generate_response(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Generate response using configured LLM provider"""
+        return await self.provider.generate_response(messages, temperature, max_tokens)
 
     async def classify_memory_operation(
         self, new_text: str, existing_memories: list[str], user_context: str | None = None
@@ -120,8 +177,6 @@ Classify the operation needed for this new text.
             response = await self.generate_response(messages, temperature=0.1)
 
             # Parse JSON response
-            import json
-
             result = json.loads(response)
 
             return {
@@ -187,8 +242,6 @@ User ID: {user_id}
             response = await self.generate_response(messages, temperature=0.1)
 
             # Parse JSON response
-            import json
-
             result = json.loads(response)
 
             return {

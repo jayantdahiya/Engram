@@ -1,5 +1,15 @@
 # Engram
-Persistent long‑term memory for AI agents with dense facts and graph relations.
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Docker](https://img.shields.io/badge/Docker-ready-blue.svg)](https://www.docker.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-blue.svg)](https://www.postgresql.org/)
+[![Neo4j](https://img.shields.io/badge/Neo4j-5.x-green.svg)](https://neo4j.com/)
+
+**Persistent long‑term memory for AI agents with dense facts and graph relations.**
+
+> Give your AI agents the ability to remember everything — conversations, preferences, entities, and relationships — across sessions with intelligent retrieval and memory consolidation.
 
 ## Name meaning
 Engram is the classical term for a memory "trace": the enduring physical and/or chemical changes in neural circuitry produced by learning, which can later be reactivated to support recall. The concept originates with Richard Semon and is widely used in modern neuroscience to describe the substrate of stored experience. [3][4][5][6][7]
@@ -53,7 +63,8 @@ It reflects durable storage, precise retrieval, and structured consolidation acr
 - **Redis 7.x** - Caching, session storage, and Celery message broker
 
 ### AI & ML Components
-- **OpenAI API** - GPT-4o-mini for LLM operations
+- **Ollama** (default) - Local LLM inference for privacy-first deployments
+- **OpenAI API** - Cloud LLM option (GPT-4o-mini)
 - **sentence-transformers** - Local embedding generation
 - **tiktoken** - Token counting for cost management
 
@@ -313,6 +324,21 @@ Based on research benchmarks:
 - **Memory Footprint**: < 10K tokens per conversation
 - **Accuracy**: >65% LLM-as-a-Judge score
 - **Throughput**: 1000+ requests/minute per instance
+
+Run benchmarks yourself:
+```bash
+cd engram-backend
+python -m benchmarks.run_benchmarks
+```
+
+See [benchmarks/README.md](engram-backend/benchmarks/README.md) for detailed benchmark results.
+
+## 📚 Examples
+
+See the [examples/](examples/) folder for:
+- [API usage guide](examples/README.md) with curl commands
+- [Postman collection](examples/engram-api.postman_collection.json) for testing
+- Python client example
 
 ## 🤝 Contributing
 

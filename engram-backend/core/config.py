@@ -17,10 +17,19 @@ class Settings(BaseSettings):
     neo4j_user: str = Field(default="neo4j", env="NEO4J_USER")
     neo4j_password: str = Field(default="secure_password", env="NEO4J_PASSWORD")
 
-    # Ollama Configuration
+    # LLM Provider Configuration
+    # Options: "ollama" (default, local), "openai" (cloud)
+    llm_provider: str = Field(default="ollama", env="LLM_PROVIDER")
+
+    # Ollama Configuration (for llm_provider="ollama")
     ollama_base_url: str = Field(default="http://localhost:11434", env="OLLAMA_BASE_URL")
     ollama_llm_model: str = Field(default="gemma3:270m", env="OLLAMA_LLM_MODEL")
     ollama_embedding_model: str = Field(default="nomic-embed-text:latest", env="OLLAMA_EMBEDDING_MODEL")
+
+    # OpenAI Configuration (for llm_provider="openai")
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+    openai_llm_model: str = Field(default="gpt-4o-mini", env="OPENAI_LLM_MODEL")
+    openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
 
     # Security Configuration
     secret_key: str = Field(default="your-secret-key-change-in-production", env="SECRET_KEY")

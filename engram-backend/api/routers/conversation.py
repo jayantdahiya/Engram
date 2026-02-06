@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import AuthUserDep, DatabaseDep
@@ -41,10 +42,10 @@ async def create_conversation(
         now = datetime.utcnow()
 
         await db_session.execute(
-            """
+            text("""
             INSERT INTO conversations (id, user_id, title, metadata, created_at, updated_at)
             VALUES (:id, :user_id, :title, :metadata, :created_at, :updated_at)
-            """,
+            """),
             {
                 "id": conversation_id,
                 "user_id": conversation_data.user_id,
@@ -90,11 +91,11 @@ async def get_conversation(
     try:
         # Get conversation
         conv_result = await db_session.execute(
-            """
+            text("""
             SELECT id, user_id, title, metadata, created_at, updated_at
             FROM conversations
             WHERE id = :conversation_id AND user_id = :user_id
-            """,
+            """),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -107,13 +108,13 @@ async def get_conversation(
 
         # Get turns
         turns_result = await db_session.execute(
-            """
+            text("""
             SELECT id, conversation_id, user_id, user_message, assistant_response,
                    turn_number, timestamp, memory_operations, processing_time_ms
             FROM conversation_turns
             WHERE conversation_id = :conversation_id
             ORDER BY turn_number ASC
-            """,
+            """),
             {"conversation_id": conversation_id},
         )
 
@@ -121,12 +122,12 @@ async def get_conversation(
 
         # Get memories from this conversation
         memories_result = await db_session.execute(
-            """
+            text("""
             SELECT id, text, timestamp, importance_score, access_count
             FROM memories
             WHERE conversation_id = :conversation_id AND user_id = :user_id
             ORDER BY timestamp DESC
-            """,
+            """),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -193,7 +194,7 @@ async def update_conversation(
     try:
         # Check if conversation exists and belongs to user
         result = await db_session.execute(
-            "SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id",
+            text("SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id"),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -221,7 +222,7 @@ async def update_conversation(
 
         update_data.update({"conversation_id": conversation_id, "user_id": current_user})
 
-        await db_session.execute(query, update_data)
+        await db_session.execute(text(query), update_data)
         await db_session.commit()
 
         # Return updated conversation
@@ -247,7 +248,7 @@ async def delete_conversation(
     try:
         # Check if conversation exists and belongs to user
         result = await db_session.execute(
-            "SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id",
+            text("SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id"),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -258,19 +259,21 @@ async def delete_conversation(
 
         # Delete conversation turns
         await db_session.execute(
-            "DELETE FROM conversation_turns WHERE conversation_id = :conversation_id",
+            text("DELETE FROM conversation_turns WHERE conversation_id = :conversation_id"),
             {"conversation_id": conversation_id},
         )
 
         # Delete memories associated with this conversation
         await db_session.execute(
-            "DELETE FROM memories WHERE conversation_id = :conversation_id AND user_id = :user_id",
+            text(
+                "DELETE FROM memories WHERE conversation_id = :conversation_id AND user_id = :user_id"
+            ),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
         # Delete conversation
         await db_session.execute(
-            "DELETE FROM conversations WHERE id = :conversation_id AND user_id = :user_id",
+            text("DELETE FROM conversations WHERE id = :conversation_id AND user_id = :user_id"),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -327,7 +330,7 @@ async def list_conversations(
             LIMIT :limit OFFSET :offset
         """
 
-        result = await db_session.execute(base_query, params)
+        result = await db_session.execute(text(base_query), params)
         conversations = result.fetchall()
 
         # Get total count
@@ -335,7 +338,7 @@ async def list_conversations(
         if search:
             count_query += " AND (title ILIKE :search OR metadata::text ILIKE :search)"
 
-        count_result = await db_session.execute(count_query, params)
+        count_result = await db_session.execute(text(count_query), params)
         total_count = count_result.scalar()
 
         return ConversationListResponse(
@@ -383,7 +386,7 @@ async def add_conversation_turn(
 
         # Check if conversation exists
         conv_result = await db_session.execute(
-            "SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id",
+            text("SELECT id FROM conversations WHERE id = :conversation_id AND user_id = :user_id"),
             {"conversation_id": conversation_id, "user_id": current_user},
         )
 
@@ -394,7 +397,9 @@ async def add_conversation_turn(
 
         # Get next turn number
         turn_count_result = await db_session.execute(
-            "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = :conversation_id",
+            text(
+                "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = :conversation_id"
+            ),
             {"conversation_id": conversation_id},
         )
         next_turn_number = turn_count_result.scalar() + 1
@@ -404,13 +409,13 @@ async def add_conversation_turn(
         now = datetime.utcnow()
 
         await db_session.execute(
-            """
+            text("""
             INSERT INTO conversation_turns 
             (id, conversation_id, user_id, user_message, assistant_response, 
              turn_number, timestamp, memory_operations, processing_time_ms)
             VALUES (:id, :conversation_id, :user_id, :user_message, :assistant_response,
                     :turn_number, :timestamp, :memory_operations, :processing_time_ms)
-            """,
+            """),
             {
                 "id": turn_id,
                 "conversation_id": conversation_id,
@@ -426,7 +431,7 @@ async def add_conversation_turn(
 
         # Update conversation timestamp
         await db_session.execute(
-            "UPDATE conversations SET updated_at = :updated_at WHERE id = :conversation_id",
+            text("UPDATE conversations SET updated_at = :updated_at WHERE id = :conversation_id"),
             {"updated_at": now, "conversation_id": conversation_id},
         )
 
@@ -466,17 +471,18 @@ async def get_conversation_stats(
     try:
         # Get total conversations
         conv_count_result = await db_session.execute(
-            "SELECT COUNT(*) FROM conversations WHERE user_id = :user_id", {"user_id": current_user}
+            text("SELECT COUNT(*) FROM conversations WHERE user_id = :user_id"),
+            {"user_id": current_user},
         )
         total_conversations = conv_count_result.scalar()
 
         # Get total turns
         turn_count_result = await db_session.execute(
-            """
+            text("""
             SELECT COUNT(*) FROM conversation_turns ct
             JOIN conversations c ON ct.conversation_id = c.id
             WHERE c.user_id = :user_id
-            """,
+            """),
             {"user_id": current_user},
         )
         total_turns = turn_count_result.scalar()
@@ -486,7 +492,7 @@ async def get_conversation_stats(
 
         # Get recent conversations
         recent_result = await db_session.execute(
-            """
+            text("""
             SELECT id, user_id, title, metadata, created_at, updated_at,
                    COUNT(ct.id) as turn_count,
                    COUNT(m.id) as memory_count
@@ -497,7 +503,7 @@ async def get_conversation_stats(
             GROUP BY c.id
             ORDER BY c.updated_at DESC
             LIMIT 5
-            """,
+            """),
             {"user_id": current_user},
         )
         recent_conversations = recent_result.fetchall()

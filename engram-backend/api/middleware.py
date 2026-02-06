@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
-from prometheus_client import Counter, Histogram, generate_latest
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.logging import logger
@@ -20,11 +20,9 @@ REQUEST_LATENCY = Histogram(
     "http_request_duration_seconds", "HTTP request latency", ["method", "endpoint"]
 )
 
-ACTIVE_CONNECTIONS = Counter("http_active_connections", "Number of active HTTP connections")
+ACTIVE_CONNECTIONS = Gauge("http_active_connections", "Number of active HTTP connections")
 
-RATE_LIMIT_HITS = Counter(
-    "rate_limit_hits_total", "Total rate limit hits", ["endpoint"]
-)
+RATE_LIMIT_HITS = Counter("rate_limit_hits_total", "Total rate limit hits", ["endpoint"])
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -40,8 +38,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
         self.burst_size = burst_size
-        self.exclude_paths = exclude_paths or ["/health", "/metrics", "/docs", "/redoc", "/openapi.json"]
-        
+        self.exclude_paths = exclude_paths or [
+            "/health",
+            "/metrics",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+        ]
+
         # Token buckets per client IP
         self.buckets: dict[str, dict] = defaultdict(
             lambda: {"tokens": burst_size, "last_update": time.time()}
@@ -54,12 +58,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
-        
+
         # Check for X-Real-IP header
         real_ip = request.headers.get("X-Real-IP")
         if real_ip:
             return real_ip
-        
+
         # Fall back to direct client
         return request.client.host if request.client else "unknown"
 
@@ -67,66 +71,65 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """Check if client is rate limited using token bucket algorithm"""
         current_time = time.time()
         bucket = self.buckets[client_ip]
-        
+
         # Refill tokens based on elapsed time
         elapsed = current_time - bucket["last_update"]
-        bucket["tokens"] = min(
-            self.burst_size,
-            bucket["tokens"] + elapsed * self.tokens_per_second
-        )
+        bucket["tokens"] = min(self.burst_size, bucket["tokens"] + elapsed * self.tokens_per_second)
         bucket["last_update"] = current_time
-        
+
         # Check if we have tokens available
         if bucket["tokens"] >= 1:
             bucket["tokens"] -= 1
             return False, {
                 "remaining": int(bucket["tokens"]),
                 "limit": self.requests_per_minute,
-                "reset": int(current_time + (self.burst_size - bucket["tokens"]) / self.tokens_per_second)
+                "reset": int(
+                    current_time + (self.burst_size - bucket["tokens"]) / self.tokens_per_second
+                ),
             }
-        
+
         return True, {
             "remaining": 0,
             "limit": self.requests_per_minute,
-            "reset": int(current_time + (1 - bucket["tokens"]) / self.tokens_per_second)
+            "reset": int(current_time + (1 - bucket["tokens"]) / self.tokens_per_second),
         }
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Process request with rate limiting"""
-        
+
         # Skip rate limiting for excluded paths
         path = request.url.path
         if any(path.startswith(excluded) for excluded in self.exclude_paths):
             return await call_next(request)
-        
+
         client_ip = self._get_client_ip(request)
         is_limited, rate_info = self._is_rate_limited(client_ip)
-        
+
         if is_limited:
             RATE_LIMIT_HITS.labels(endpoint=path).inc()
             logger.warning(f"Rate limit exceeded for {client_ip} on {path}")
-            
+
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
                     "error": "Rate limit exceeded",
                     "message": f"Too many requests. Limit: {rate_info['limit']}/minute",
-                    "retry_after": rate_info["reset"] - int(time.time())
+                    "retry_after": rate_info["reset"] - int(time.time()),
                 },
                 headers={
                     "X-RateLimit-Limit": str(rate_info["limit"]),
                     "X-RateLimit-Remaining": "0",
                     "X-RateLimit-Reset": str(rate_info["reset"]),
-                    "Retry-After": str(rate_info["reset"] - int(time.time()))
-                }
+                    "Retry-After": str(rate_info["reset"] - int(time.time())),
+                },
             )
-        
+
         # Process request and add rate limit headers
         response = await call_next(request)
         response.headers["X-RateLimit-Limit"] = str(rate_info["limit"])
         response.headers["X-RateLimit-Remaining"] = str(rate_info["remaining"])
         response.headers["X-RateLimit-Reset"] = str(rate_info["reset"])
-        
+
         return response
 
 

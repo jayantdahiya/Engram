@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import DatabaseDep
@@ -23,7 +24,7 @@ async def register_user(user_data: UserCreate, db_session: AsyncSession = Databa
     try:
         # Check if user already exists
         result = await db_session.execute(
-            "SELECT id FROM users WHERE username = :username OR email = :email",
+            text("SELECT id FROM users WHERE username = :username OR email = :email"),
             {"username": user_data.username, "email": user_data.email},
         )
 
@@ -39,14 +40,14 @@ async def register_user(user_data: UserCreate, db_session: AsyncSession = Databa
         # Create user
         user_id = str(uuid.uuid4())
         await db_session.execute(
-            """
+            text("""
             INSERT INTO users (
                 id, username, email, full_name, hashed_password, is_active, created_at
             )
             VALUES (
                 :id, :username, :email, :full_name, :hashed_password, :is_active, :created_at
             )
-            """,
+            """),
             {
                 "id": user_id,
                 "username": user_data.username,
@@ -91,11 +92,11 @@ async def login_user(
     try:
         # Get user by username or email
         result = await db_session.execute(
-            """
+            text("""
             SELECT id, username, email, hashed_password, is_active
             FROM users
             WHERE (username = :username OR email = :username) AND is_active = true
-            """,
+            """),
             {"username": form_data.username},
         )
 
@@ -112,7 +113,7 @@ async def login_user(
 
         # Update last login
         await db_session.execute(
-            "UPDATE users SET last_login = :last_login WHERE id = :user_id",
+            text("UPDATE users SET last_login = :last_login WHERE id = :user_id"),
             {"last_login": datetime.utcnow(), "user_id": user.id},
         )
         await db_session.commit()
@@ -120,7 +121,8 @@ async def login_user(
         # Create access token
         access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
         access_token = auth_service.create_access_token(
-            data={"sub": user.id, "username": user.username}, expires_delta=access_token_expires
+            data={"sub": str(user.id), "username": user.username},
+            expires_delta=access_token_expires,
         )
 
         logger.info(f"User logged in: {user.username}")
@@ -149,7 +151,7 @@ async def refresh_token(
     try:
         # Get user info
         result = await db_session.execute(
-            "SELECT username FROM users WHERE id = :user_id", {"user_id": current_user}
+            text("SELECT username FROM users WHERE id = :user_id"), {"user_id": current_user}
         )
 
         user = result.fetchone()
@@ -186,7 +188,7 @@ async def get_current_user_info(
 
     try:
         result = await db_session.execute(
-            """
+            text("""
             SELECT u.id, u.username, u.email, u.full_name, u.is_active,
                    u.created_at, u.last_login,
                    COUNT(m.id) as memory_count
@@ -194,7 +196,7 @@ async def get_current_user_info(
             LEFT JOIN memories m ON u.id = m.user_id
             WHERE u.id = :user_id
             GROUP BY u.id
-            """,
+            """),
             {"user_id": current_user},
         )
 
@@ -204,7 +206,7 @@ async def get_current_user_info(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
         return UserResponse(
-            id=user.id,
+            id=str(user.id),
             username=user.username,
             email=user.email,
             full_name=user.full_name,

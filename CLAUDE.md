@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Engram is a persistent long-term memory system for AI agents. It stores conversation memories as vector embeddings in PostgreSQL (pgvector), entity/relationship graphs in Neo4j, and uses an ACAN (Attention-based Context-Aware Network) retrieval system for intelligent memory recall. All backend code lives in `engram-backend/`.
+Engram is a persistent long-term memory system for AI agents. It stores conversation memories as vector embeddings in PostgreSQL (pgvector), entity/relationship graphs in Neo4j, and uses an ACAN (Attention-based Context-Aware Network) retrieval system for intelligent memory recall.
+
+The repository consists of two main components:
+- `engram-backend/`: The core API service (FastAPI, Postgres, Neo4j, Redis, Celery).
+- `engram-mcp/`: A Model Context Protocol (MCP) server that connects AI assistants (like Claude) to Engram.
 
 ## Commands
 
-### Development (local, from `engram-backend/`)
+### Backend Development (from `engram-backend/`)
 ```bash
 # Activate venv
 source .venv/bin/activate
@@ -24,6 +28,18 @@ celery -A tasks.celery_app worker --loglevel=info
 celery -A tasks.celery_app beat --loglevel=info
 ```
 
+### MCP Server (from `engram-mcp/`)
+```bash
+# Start MCP server (wrapper script, handles environment & logging)
+./start-mcp.sh
+
+# Install/Sync dependencies (using uv)
+uv sync
+
+# Run directly (if not using wrapper)
+uv run engram-mcp
+```
+
 ### Docker (full stack)
 ```bash
 # Start all services (API, workers, PostgreSQL, Neo4j, Redis, Nginx, Prometheus, Grafana)
@@ -33,21 +49,29 @@ docker-compose -f engram-backend/infrastructure/docker/docker-compose.yml up -d
 docker-compose -f engram-backend/infrastructure/docker/docker-compose.yml ps
 ```
 
-### Testing (from `engram-backend/`)
+### Testing
 ```bash
+# Backend tests (from engram-backend/)
 pytest tests/ -v                          # All tests
 pytest tests/unit/ -v                     # Unit tests only
 pytest tests/integration/ -v              # Integration tests only
 pytest tests/unit/test_memory_manager.py -v  # Single test file
 pytest tests/ --cov=. --cov-report=html   # With coverage
+
+# MCP tests (from engram-mcp/)
+pytest .                                  # Run all MCP tests
 ```
 
 ### Linting (from repo root)
 ```bash
+# Backend
 ruff check engram-backend/                # Lint
 ruff check engram-backend/ --fix          # Lint with auto-fix
 black engram-backend/                     # Format
 isort engram-backend/                     # Sort imports
+
+# MCP
+ruff check engram-mcp/                    # Lint
 ```
 
 ### Benchmarks (from `engram-backend/`)
@@ -58,9 +82,10 @@ python -m benchmarks.run_benchmarks
 ## Architecture
 
 ### Request Flow
-Nginx -> FastAPI (`api/main.py`) -> Routers (`api/routers/`) -> Services (`services/`) -> Databases
+1. **API**: Nginx -> FastAPI (`api/main.py`) -> Routers (`api/routers/`) -> Services (`services/`) -> Databases
+2. **MCP**: Claude Desktop -> MCP Server (`engram-mcp`) -> Engram Client -> Engram API
 
-### Core Components
+### Core Components (Backend)
 
 **Memory Manager** (`services/memory_manager.py`): Central orchestrator. On each conversation turn:
 1. Generates embedding via `embedding_service`
@@ -76,13 +101,18 @@ Nginx -> FastAPI (`api/main.py`) -> Routers (`api/routers/`) -> Services (`servi
 
 **Graph Service** (`services/graph_service.py`): Manages Neo4j entity/relationship storage (Engram Graph). Entities have MERGE semantics; relationships use `:RELATION` type with confidence scores.
 
-**LLM Service** (`services/llm_service.py`): Supports two providers controlled by `LLM_PROVIDER` env var:
-- `ollama` (default): Local inference, model `gemma3:270m`, embeddings via `nomic-embed-text`
+**LLM Service** (`services/llm_service.py`): Supports providers controlled by `LLM_PROVIDER` env var:
+- `ollama` (default): Local inference, model `gemma3:270m` (configurable), embeddings via `nomic-embed-text`
 - `openai`: Cloud inference via GPT-4o-mini, embeddings via `text-embedding-3-small`
 
 **Celery Tasks** (`tasks/`): Two queues:
 - `memory` queue: memory extraction, batch processing, consolidation, summaries
 - `maintenance` queue: cleanup old memories (hourly), optimize embeddings (daily), generate summaries (6h)
+
+### MCP Server (`engram-mcp`)
+- Built with `fastmcp` and `httpx`.
+- Exposes tools: `remember`, `recall`, `store_memory`, `forget`, `memory_stats`, `check_health`.
+- Auto-authenticates with Engram API (handles registration/login).
 
 ### Database Stack
 - **PostgreSQL + pgvector**: Vector storage, memories table with embeddings (default dim: 768 for nomic-embed-text)
@@ -97,7 +127,7 @@ Nginx -> FastAPI (`api/main.py`) -> Routers (`api/routers/`) -> Services (`servi
 
 ### Key Patterns
 - **Dependency injection** via `api/dependencies.py`: `DatabaseDep`, `AuthUserDep`, `Neo4jDep`, `RedisDep`
-- **Async throughout**: SQLAlchemy async sessions, async Neo4j driver, async Redis
+- **Async throughout**: SQLAlchemy async sessions, async Neo4j driver, async Redis, async MCP tools
 - **Global singletons**: `memory_manager`, `graph_service`, `embedding_service`, `llm_service` instantiated at module level
 - **Pydantic models** in `models/`: `memory.py` (main), `user.py`, `conversation.py`
 - **Config** via `core/config.py`: Pydantic `BaseSettings` loading from `.env`
@@ -112,4 +142,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs: ruff + black + isort lint -> p
 - **Ruff**: line-length 100, targeting Python 3.11, rules: E, F, W, I, B, UP, Q
 - **Black**: line-length 88, target Python 3.11
 - **isort**: black-compatible profile
-- First-party packages: `api`, `core`, `models`, `services`, `tasks`, `tests`, `utils`
+- First-party packages: `api`, `core`, `models`, `services`, `tasks`, `tests`, `utils`, `engram_mcp`

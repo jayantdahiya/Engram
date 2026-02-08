@@ -101,17 +101,19 @@ class EngramClient:
     # ------------------------------------------------------------------
 
     async def process_turn(
-        self, user_message: str, conversation_id: str = "default"
+        self, user_message: str, conversation_id: str | None = None
     ) -> dict[str, Any]:
         """POST /memory/process-turn — auto-classify and store a memory."""
         await self._ensure_token()
+        body: dict[str, Any] = {
+            "user_message": user_message,
+            "user_id": self._user_id,
+        }
+        if conversation_id is not None:
+            body["conversation_id"] = conversation_id
         resp = await self._http.post(
             "/memory/process-turn",
-            json={
-                "user_message": user_message,
-                "user_id": self._user_id,
-                "conversation_id": conversation_id,
-            },
+            json=body,
             headers=self._auth_headers(),
         )
         resp.raise_for_status()

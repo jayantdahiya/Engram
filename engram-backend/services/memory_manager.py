@@ -53,56 +53,61 @@ class MemoryManager:
             # Determine memory operations
             memory_ops = [operation_result["operation"]]
 
-            # Persist conversation turn
-            try:
-                # Get next turn number
-                turn_count_result = await db_session.execute(
-                    sa_text(
-                        "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = :conversation_id"
-                    ),
-                    {"conversation_id": turn.conversation_id},
-                )
-                next_turn_number = turn_count_result.scalar() + 1
+            # Initialize turn_id for response
+            turn_id = str(uuid.uuid4())
 
-                turn_id = str(uuid.uuid4())
+            # Persist conversation turn only if conversation_id is provided
+            if turn.conversation_id is not None:
+                try:
+                    # Get next turn number
+                    turn_count_result = await db_session.execute(
+                        sa_text(
+                            "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = :conversation_id"
+                        ),
+                        {"conversation_id": turn.conversation_id},
+                    )
+                    next_turn_number = turn_count_result.scalar() + 1
 
-                await db_session.execute(
-                    sa_text("""
-                    INSERT INTO conversation_turns 
-                    (id, conversation_id, user_id, user_message, assistant_response, 
-                     turn_number, timestamp, memory_operations, processing_time_ms)
-                    VALUES (:id, :conversation_id, :user_id, :user_message, :assistant_response,
-                            :turn_number, :timestamp, :memory_operations, :processing_time_ms)
-                    """),
-                    {
-                        "id": turn_id,
-                        "conversation_id": turn.conversation_id,
-                        "user_id": turn.user_id,
-                        "user_message": turn.user_message,
-                        "assistant_response": turn.assistant_response,
-                        "turn_number": next_turn_number,
-                        "timestamp": turn.timestamp or datetime.utcnow(),
-                        "memory_operations": json.dumps(memory_ops),
-                        "processing_time_ms": (time.time() - start_time) * 1000,
-                    },
-                )
+                    await db_session.execute(
+                        sa_text("""
+                        INSERT INTO conversation_turns 
+                        (id, conversation_id, user_id, user_message, assistant_response, 
+                         turn_number, timestamp, memory_operations, processing_time_ms)
+                        VALUES (:id, :conversation_id, :user_id, :user_message, :assistant_response,
+                                :turn_number, :timestamp, :memory_operations, :processing_time_ms)
+                        """),
+                        {
+                            "id": turn_id,
+                            "conversation_id": turn.conversation_id,
+                            "user_id": turn.user_id,
+                            "user_message": turn.user_message,
+                            "assistant_response": turn.assistant_response,
+                            "turn_number": next_turn_number,
+                            "timestamp": turn.timestamp or datetime.utcnow(),
+                            "memory_operations": json.dumps(memory_ops),
+                            "processing_time_ms": (time.time() - start_time) * 1000,
+                        },
+                    )
 
-                # Update conversation timestamp
-                await db_session.execute(
-                    sa_text(
-                        "UPDATE conversations SET updated_at = :updated_at WHERE id = :conversation_id"
-                    ),
-                    {"updated_at": datetime.utcnow(), "conversation_id": turn.conversation_id},
-                )
+                    # Update conversation timestamp
+                    await db_session.execute(
+                        sa_text(
+                            "UPDATE conversations SET updated_at = :updated_at WHERE id = :conversation_id"
+                        ),
+                        {"updated_at": datetime.utcnow(), "conversation_id": turn.conversation_id},
+                    )
 
-                # Commit all changes (memory + turn)
+                    # Commit all changes (memory + turn)
+                    await db_session.commit()
+
+                except Exception as e:
+                    logger.error(f"Failed to persist conversation turn: {e}")
+                    # Don't fail the request if just persistence fails?
+                    # Or should we? Probably yes for data integrity.
+                    raise
+            else:
+                # No conversation context - just commit the memory changes
                 await db_session.commit()
-
-            except Exception as e:
-                logger.error(f"Failed to persist conversation turn: {e}")
-                # Don't fail the request if just persistence fails?
-                # Or should we? Probably yes for data integrity.
-                raise
 
             processing_time = (time.time() - start_time) * 1000
 

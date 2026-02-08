@@ -11,12 +11,12 @@ echo "ENGRAM_USERNAME=$ENGRAM_USERNAME" >> /tmp/engram-mcp-debug.log
 echo "ENGRAM_PASSWORD set: ${ENGRAM_PASSWORD:+yes}" >> /tmp/engram-mcp-debug.log
 date >> /tmp/engram-mcp-debug.log
 
-# Activate the virtual environment and run the server
-source .venv/bin/activate
+# Use python3 directly from the venv (avoiding activation issues with paths containing spaces)
+VENV_PYTHON="$(dirname "$0")/.venv/bin/python3"
 
 # Suppress terminal features that might interfere with STDIO protocol
 export TERM=dumb
 export NO_COLOR=1
 
 # Run the server (stderr goes to log file for debugging)
-exec python -m engram_mcp.server 2>>/tmp/engram-mcp-error.log
+exec "$VENV_PYTHON" -m engram_mcp.server 2>>/tmp/engram-mcp-error.log

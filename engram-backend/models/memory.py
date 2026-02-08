@@ -83,9 +83,9 @@ class ConversationTurn(BaseModel):
     """Model for processing conversation turns"""
 
     user_message: str = Field(..., description="User message text")
-    assistant_response: str | None = Field(None, description="Assistant response text")
+    assistant_response: str | None = Field(default=None, description="Assistant response text")
     user_id: str = Field(..., description="User ID")
-    conversation_id: str = Field(..., description="Conversation ID")
+    conversation_id: str | None = Field(default=None, description="Conversation ID (optional)")
     timestamp: datetime | None = Field(
         default_factory=datetime.utcnow, description="Turn timestamp"
     )

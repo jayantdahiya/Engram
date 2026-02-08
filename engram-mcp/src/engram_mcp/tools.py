@@ -29,8 +29,7 @@ def register_tools(mcp_instance: FastMCP) -> None:
         conversation_id: str | None = None,
     ) -> str:
         """Store a memory from conversation. The system auto-classifies it as ADD, UPDATE, or CONSOLIDATE."""
-        if conversation_id is None:
-            conversation_id = "00000000-0000-0000-0000-000000000000"
+        # Pass None to create memories without a conversation context
         client = _get_client(ctx)
         result = await client.process_turn(user_message, conversation_id)
         op = result.get("operation_performed", "unknown")

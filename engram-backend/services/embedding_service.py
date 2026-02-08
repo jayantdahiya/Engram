@@ -1,7 +1,6 @@
 """Embedding service for generating and managing text embeddings"""
 
 import asyncio
-import json
 
 import httpx
 import numpy as np
@@ -66,7 +65,7 @@ class EmbeddingService:
                 "model": self.embedding_model,
                 "input": text
             }
-            
+
             # Add dimensions parameter if target dimension is set
             if self.target_dimension:
                 payload["dimensions"] = self.target_dimension

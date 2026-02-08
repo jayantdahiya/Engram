@@ -1,6 +1,5 @@
 """Shared pytest configuration and fixtures for Engram tests."""
 
-import asyncio
 import os
 import sys
 from collections.abc import AsyncGenerator
@@ -23,10 +22,8 @@ from api.dependencies import (
     get_neo4j_dependency,
     get_redis_dependency,
 )
-from core.database import Base
 
 # Import models to register them with Base
-from models import user, memory, conversation
 
 
 # =============================================================================

@@ -234,7 +234,7 @@ class TestMemoryRouter:
     async def test_query_memories_success(self, mock_db_session, mock_memory_manager):
         """Test successful memory query."""
         from api.routers.memory import query_memories
-        from models.memory import MemoryQuery, MemoryQueryResponse
+        from models.memory import MemoryQuery
 
         # Mock memory manager response
         mock_memory_manager.retrieve_memories = AsyncMock(
@@ -266,7 +266,7 @@ class TestMemoryRouter:
     ):
         """Test processing conversation turn."""
         from api.routers.memory import process_conversation_turn
-        from models.memory import ConversationTurn, ConversationTurnResponse
+        from models.memory import ConversationTurn
 
         # Mock memory manager response
         mock_memory_manager.process_conversation_turn = AsyncMock(

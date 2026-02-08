@@ -1,7 +1,7 @@
 """Conversation management endpoints"""
 
-import uuid
 import json
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, status

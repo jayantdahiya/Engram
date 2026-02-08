@@ -1,9 +1,11 @@
 """Memory management endpoints"""
 
+import json
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import json
 
 from api.dependencies import AuthUserDep, DatabaseDep
 from core.logging import logger
@@ -540,7 +542,3 @@ async def consolidate_memories(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to consolidate memories",
         )
-
-
-# Import required modules
-from datetime import datetime

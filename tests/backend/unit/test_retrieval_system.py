@@ -1,6 +1,5 @@
 """Unit tests for ACANRetrievalSystem."""
 
-from unittest.mock import AsyncMock, patch
 import time
 
 import numpy as np

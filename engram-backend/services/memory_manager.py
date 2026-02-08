@@ -1,11 +1,13 @@
 """Core memory manager service implementing Engram architecture"""
 
+import json
 import time
 import uuid
 from datetime import datetime
 from typing import Any
 
 import numpy as np
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -142,25 +144,26 @@ class MemoryManager:
                 await self._cleanup_old_memories(user_id, db_session)
 
             # Create memory entry
+            embedding_list = embedding.tolist()
             memory_data = {
                 "text": text,
-                "embedding": embedding.tolist(),
+                "embedding": str(embedding_list),
                 "user_id": user_id,
                 "conversation_id": conversation_id,
                 "timestamp": datetime.utcnow(),
                 "importance_score": 0.0,
                 "access_count": 0,
-                "metadata": {},
+                "metadata": json.dumps({}),
             }
 
             # Insert into database (assuming you have a Memory model)
             # This would be implemented with your actual database model
             result = await db_session.execute(
-                """
+                sa_text("""
                 INSERT INTO memories (text, embedding, user_id, conversation_id, timestamp, importance_score, access_count, metadata)
                 VALUES (:text, :embedding, :user_id, :conversation_id, :timestamp, :importance_score, :access_count, :metadata)
                 RETURNING id
-                """,
+                """),
                 memory_data,
             )
 
@@ -187,7 +190,7 @@ class MemoryManager:
         try:
             # Get existing memory
             result = await db_session.execute(
-                "SELECT text, embedding FROM memories WHERE id = :memory_id AND user_id = :user_id",
+                sa_text("SELECT text, embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"),
                 {"memory_id": memory_id, "user_id": user_id},
             )
             existing = result.fetchone()
@@ -201,14 +204,14 @@ class MemoryManager:
 
             # Update memory
             await db_session.execute(
-                """
+                sa_text("""
                 UPDATE memories
                 SET text = :text, embedding = :embedding, timestamp = :timestamp
                 WHERE id = :memory_id AND user_id = :user_id
-                """,
+                """),
                 {
                     "text": updated_text,
-                    "embedding": updated_embedding.tolist(),
+                    "embedding": str(updated_embedding.tolist()),
                     "timestamp": datetime.utcnow(),
                     "memory_id": memory_id,
                     "user_id": user_id,
@@ -235,7 +238,7 @@ class MemoryManager:
         try:
             # Get existing memory
             result = await db_session.execute(
-                "SELECT embedding FROM memories WHERE id = :memory_id AND user_id = :user_id",
+                sa_text("SELECT embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"),
                 {"memory_id": memory_id, "user_id": user_id},
             )
             existing = result.fetchone()
@@ -247,14 +250,14 @@ class MemoryManager:
             updated_embedding = (np.array(existing.embedding) + new_embedding) / 2
 
             await db_session.execute(
-                """
+                sa_text("""
                 UPDATE memories
                 SET text = :text, embedding = :embedding, timestamp = :timestamp
                 WHERE id = :memory_id AND user_id = :user_id
-                """,
+                """),
                 {
                     "text": consolidated_text,
-                    "embedding": updated_embedding.tolist(),
+                    "embedding": str(updated_embedding.tolist()),
                     "timestamp": datetime.utcnow(),
                     "memory_id": memory_id,
                     "user_id": user_id,
@@ -394,13 +397,13 @@ class MemoryManager:
         """Get memories for a user"""
         # This would be implemented with your actual database model
         result = await db_session.execute(
-            """
+            sa_text("""
             SELECT id, text, embedding, timestamp, importance_score, access_count, metadata
             FROM memories
             WHERE user_id = :user_id
             ORDER BY timestamp DESC
             LIMIT :limit
-            """,
+            """),
             {"user_id": user_id, "limit": limit},
         )
 
@@ -409,19 +412,19 @@ class MemoryManager:
     async def _get_user_memory_count(self, user_id: str, db_session: AsyncSession) -> int:
         """Get memory count for a user"""
         result = await db_session.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = :user_id", {"user_id": user_id}
+            sa_text("SELECT COUNT(*) FROM memories WHERE user_id = :user_id"), {"user_id": user_id}
         )
         return result.scalar()
 
     async def _update_access_count(self, memory_id: int, db_session: AsyncSession):
         """Update memory access count and importance score"""
         await db_session.execute(
-            """
+            sa_text("""
             UPDATE memories
             SET access_count = access_count + 1,
                 importance_score = LOG(1 + access_count + 1)
             WHERE id = :memory_id
-            """,
+            """),
             {"memory_id": memory_id},
         )
         await db_session.commit()
@@ -430,7 +433,7 @@ class MemoryManager:
         """Clean up old, low-importance memories"""
         # Remove oldest 10% of memories with lowest importance
         await db_session.execute(
-            """
+            sa_text("""
             DELETE FROM memories
             WHERE user_id = :user_id
             AND id IN (
@@ -439,7 +442,7 @@ class MemoryManager:
                 ORDER BY importance_score ASC, timestamp ASC
                 LIMIT (SELECT COUNT(*) * 0.1 FROM memories WHERE user_id = :user_id)
             )
-            """,
+            """),
             {"user_id": user_id},
         )
         await db_session.commit()

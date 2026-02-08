@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from celery import current_task
+from sqlalchemy import text
 
 from core.config import settings
 from core.database import get_db_session, get_neo4j_session
@@ -55,12 +56,12 @@ async def _cleanup_old_memories_async(celery_task) -> dict[str, Any]:
             )
 
             users_result = await db_session.execute(
-                """
+                text("""
                 SELECT user_id, COUNT(*) as memory_count
                 FROM memories
                 GROUP BY user_id
                 HAVING COUNT(*) > :max_memories
-                """,
+                """),
                 {"max_memories": settings.max_memories_per_user},
             )
 
@@ -94,7 +95,7 @@ async def _cleanup_old_memories_async(celery_task) -> dict[str, Any]:
 
                 # Delete oldest, lowest importance memories
                 delete_result = await db_session.execute(
-                    """
+                    text("""
                     DELETE FROM memories
                     WHERE user_id = :user_id
                     AND id IN (
@@ -103,7 +104,7 @@ async def _cleanup_old_memories_async(celery_task) -> dict[str, Any]:
                         ORDER BY importance_score ASC, timestamp ASC
                         LIMIT :to_delete
                     )
-                    """,
+                    """),
                     {"user_id": user_id, "to_delete": to_delete},
                 )
 
@@ -182,7 +183,7 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
 
             # Get embedding statistics
             stats_result = await db_session.execute(
-                """
+                text("""
                 SELECT
                     COUNT(*) as total_embeddings,
                     AVG(array_length(embedding, 1)) as avg_dimension,
@@ -190,7 +191,7 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
                     MAX(array_length(embedding, 1)) as max_dimension
                 FROM memories
                 WHERE embedding IS NOT NULL
-                """
+                """)
             )
 
             stats = stats_result.fetchone()
@@ -202,11 +203,11 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
             )
 
             inconsistent_result = await db_session.execute(
-                """
+                text("""
                 SELECT COUNT(*)
                 FROM memories
                 WHERE array_length(embedding, 1) != :expected_dimension
-                """,
+                """),
                 {"expected_dimension": settings.embedding_dimension},
             )
 
@@ -227,12 +228,12 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
 
                 # Get memories with inconsistent embeddings
                 inconsistent_memories = await db_session.execute(
-                    """
+                    text("""
                     SELECT id, text
                     FROM memories
                     WHERE array_length(embedding, 1) != :expected_dimension
                     LIMIT 100
-                    """,
+                    """),
                     {"expected_dimension": settings.embedding_dimension},
                 )
 
@@ -244,8 +245,8 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
 
                         # Update memory
                         await db_session.execute(
-                            "UPDATE memories SET embedding = :embedding WHERE id = :id",
-                            {"embedding": new_embedding.tolist(), "id": memory.id},
+                            text("UPDATE memories SET embedding = :embedding WHERE id = :id"),
+                            {"embedding": str(new_embedding.tolist()), "id": memory.id},
                         )
 
                         regenerated_count += 1
@@ -261,7 +262,7 @@ async def _optimize_embeddings_async(celery_task) -> dict[str, Any]:
                 meta={"current": 80, "total": 100, "status": "Updating database statistics..."},
             )
 
-            await db_session.execute("ANALYZE memories")
+            await db_session.execute(text("ANALYZE memories"))
 
             # Complete
             celery_task.update_state(
@@ -331,14 +332,14 @@ async def _generate_memory_summaries_async(celery_task) -> dict[str, Any]:
             )
 
             active_users_result = await db_session.execute(
-                """
+                text("""
                 SELECT DISTINCT user_id
                 FROM memories
                 WHERE timestamp > NOW() - INTERVAL '7 days'
                 GROUP BY user_id
                 HAVING COUNT(*) >= 10
                 LIMIT 50
-                """
+                """)
             )
 
             active_users = [row.user_id for row in active_users_result.fetchall()]
@@ -365,13 +366,13 @@ async def _generate_memory_summaries_async(celery_task) -> dict[str, Any]:
                 try:
                     # Get user's recent memories
                     memories_result = await db_session.execute(
-                        """
+                        text("""
                         SELECT text
                         FROM memories
                         WHERE user_id = :user_id
                         ORDER BY timestamp DESC
                         LIMIT 50
-                        """,
+                        """),
                         {"user_id": user_id},
                     )
 

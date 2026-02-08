@@ -18,6 +18,7 @@ class EmbeddingService:
     def __init__(self):
         self.base_url = settings.ollama_base_url
         self.embedding_model = settings.ollama_embedding_model
+        self.target_dimension = settings.embedding_dimension
         self.local_model: SentenceTransformer | None = None
 
         # Initialize local model for fallback
@@ -27,15 +28,36 @@ class EmbeddingService:
         except Exception as e:
             logger.warning(f"Failed to load local embedding model: {e}")
 
+    def _truncate_embedding(self, embedding: np.ndarray) -> np.ndarray:
+        """Truncate embedding to target dimension (Matryoshka-style) and re-normalize."""
+        if self.target_dimension and len(embedding) > self.target_dimension:
+            embedding = embedding[: self.target_dimension]
+            norm = np.linalg.norm(embedding)
+            if norm > 0:
+                embedding = embedding / norm
+        return embedding
+
     async def get_embedding(
         self, text: str, model: str = "", use_local: bool = False
     ) -> np.ndarray:
         """Get embedding for text using specified model"""
 
         if use_local and self.local_model:
-            return await self._get_local_embedding(text)
+            return self._truncate_embedding(await self._get_local_embedding(text))
         else:
-            return await self._get_ollama_embedding(text)
+            return self._truncate_embedding(await self._get_ollama_embedding(text))
+
+    def _ensure_local_model(self) -> bool:
+        """Ensure local model is loaded, retrying if initial load failed."""
+        if self.local_model is not None:
+            return True
+        try:
+            self.local_model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Local embedding model loaded successfully (retry)")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to load local embedding model (retry): {e}")
+            return False
 
     async def _get_ollama_embedding(self, text: str) -> np.ndarray:
         """Get embedding from Ollama API"""
@@ -59,7 +81,7 @@ class EmbeddingService:
 
         except Exception as e:
             logger.error(f"Ollama embedding failed: {e}")
-            if self.local_model:
+            if self._ensure_local_model():
                 logger.info("Falling back to local embedding model")
                 return await self._get_local_embedding(text)
             else:

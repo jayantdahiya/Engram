@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastmcp import Context, FastMCP
@@ -10,7 +11,10 @@ from engram_mcp.client import EngramClient
 
 
 def _get_client(ctx: Context) -> EngramClient:
-    client = ctx.lifespan_context.get("client")
+    req_ctx = ctx.request_context
+    if req_ctx is None:
+        raise RuntimeError("Engram client not initialized (no request context)")
+    client = req_ctx.lifespan_context.get("client")
     if client is None:
         raise RuntimeError("Engram client not initialized")
     return client
@@ -27,7 +31,7 @@ def register_tools(mcp_instance: FastMCP) -> None:
     ) -> str:
         """Store a memory from conversation. The system auto-classifies it as ADD, UPDATE, or CONSOLIDATE."""
         if conversation_id is None:
-            conversation_id = "default"
+            conversation_id = "00000000-0000-0000-0000-000000000000"
         client = _get_client(ctx)
         result = await client.process_turn(user_message, conversation_id)
         op = result.get("operation_performed", "unknown")

@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 from celery import current_task
+from sqlalchemy import text
 
 from core.database import get_db_session, get_neo4j_session
 from core.logging import logger
@@ -325,7 +326,7 @@ async def _consolidate_user_memories_async(
 
                     # Delete second memory
                     await db_session.execute(
-                        "DELETE FROM memories WHERE id = :memory_id", {"memory_id": memory2.id}
+                        text("DELETE FROM memories WHERE id = :memory_id"), {"memory_id": memory2.id}
                     )
 
                     consolidated_count += 1

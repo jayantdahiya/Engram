@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
 from neo4j import AsyncGraphDatabase
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -123,7 +124,7 @@ async def check_postgres_health() -> bool:
     """Check PostgreSQL connection health"""
     try:
         async with get_db_session() as session:
-            await session.execute("SELECT 1")
+            await session.execute(text("SELECT 1"))
         return True
     except Exception as e:
         logger.error(f"PostgreSQL health check failed: {e}")

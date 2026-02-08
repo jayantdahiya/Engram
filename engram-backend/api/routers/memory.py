@@ -1,6 +1,7 @@
 """Memory management endpoints"""
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import AuthUserDep, DatabaseDep
@@ -44,12 +45,12 @@ async def create_memory(
 
         # Get created memory
         result = await db_session.execute(
-            """
-            SELECT id, text, embedding, user_id, conversation_id, timestamp, 
+            text("""
+            SELECT id, text, embedding, user_id, conversation_id, timestamp,
                    importance_score, access_count, metadata
-            FROM memories 
+            FROM memories
             WHERE id = :memory_id
-            """,
+            """),
             {"memory_id": memory_id},
         )
 
@@ -82,12 +83,12 @@ async def get_memory(
 
     try:
         result = await db_session.execute(
-            """
-            SELECT id, text, embedding, user_id, conversation_id, timestamp, 
+            text("""
+            SELECT id, text, embedding, user_id, conversation_id, timestamp,
                    importance_score, access_count, metadata
-            FROM memories 
+            FROM memories
             WHERE id = :memory_id AND user_id = :user_id
-            """,
+            """),
             {"memory_id": memory_id, "user_id": current_user},
         )
 
@@ -132,7 +133,7 @@ async def update_memory(
     try:
         # Check if memory exists and belongs to user
         result = await db_session.execute(
-            "SELECT id FROM memories WHERE id = :memory_id AND user_id = :user_id",
+            text("SELECT id FROM memories WHERE id = :memory_id AND user_id = :user_id"),
             {"memory_id": memory_id, "user_id": current_user},
         )
 
@@ -145,7 +146,7 @@ async def update_memory(
             update_data["text"] = memory_update.text
             # Generate new embedding if text changed
             embedding = await embedding_service.get_embedding(memory_update.text)
-            update_data["embedding"] = embedding.tolist()
+            update_data["embedding"] = str(embedding.tolist())
 
         if memory_update.importance_score is not None:
             update_data["importance_score"] = memory_update.importance_score
@@ -166,7 +167,7 @@ async def update_memory(
 
             update_data.update({"memory_id": memory_id, "user_id": current_user})
 
-            await db_session.execute(query, update_data)
+            await db_session.execute(text(query), update_data)
             await db_session.commit()
 
         # Return updated memory
@@ -190,7 +191,7 @@ async def delete_memory(
 
     try:
         result = await db_session.execute(
-            "DELETE FROM memories WHERE id = :memory_id AND user_id = :user_id",
+            text("DELETE FROM memories WHERE id = :memory_id AND user_id = :user_id"),
             {"memory_id": memory_id, "user_id": current_user},
         )
 
@@ -294,7 +295,7 @@ async def list_memories(
 
         query += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
 
-        result = await db_session.execute(query, params)
+        result = await db_session.execute(text(query), params)
         memories = result.fetchall()
 
         return [
@@ -326,41 +327,41 @@ async def get_memory_stats(current_user: str = AuthUserDep, db_session: AsyncSes
     try:
         # Get total memories
         total_result = await db_session.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = :user_id", {"user_id": current_user}
+            text("SELECT COUNT(*) FROM memories WHERE user_id = :user_id"), {"user_id": current_user}
         )
         total_memories = total_result.scalar()
 
         # Get average importance
         avg_result = await db_session.execute(
-            "SELECT AVG(importance_score) FROM memories WHERE user_id = :user_id",
+            text("SELECT AVG(importance_score) FROM memories WHERE user_id = :user_id"),
             {"user_id": current_user},
         )
         avg_importance = avg_result.scalar() or 0.0
 
         # Get most accessed memories
         most_accessed_result = await db_session.execute(
-            """
-            SELECT id, text, embedding, user_id, conversation_id, timestamp, 
+            text("""
+            SELECT id, text, embedding, user_id, conversation_id, timestamp,
                    importance_score, access_count, metadata
-            FROM memories 
+            FROM memories
             WHERE user_id = :user_id
             ORDER BY access_count DESC
             LIMIT 5
-            """,
+            """),
             {"user_id": current_user},
         )
         most_accessed = most_accessed_result.fetchall()
 
         # Get recent memories
         recent_result = await db_session.execute(
-            """
-            SELECT id, text, embedding, user_id, conversation_id, timestamp, 
+            text("""
+            SELECT id, text, embedding, user_id, conversation_id, timestamp,
                    importance_score, access_count, metadata
-            FROM memories 
+            FROM memories
             WHERE user_id = :user_id
             ORDER BY timestamp DESC
             LIMIT 5
-            """,
+            """),
             {"user_id": current_user},
         )
         recent_memories = recent_result.fetchall()

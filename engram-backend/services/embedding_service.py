@@ -64,18 +64,23 @@ class EmbeddingService:
         try:
             payload = {
                 "model": self.embedding_model,
-                "prompt": text
+                "input": text
             }
+            
+            # Add dimensions parameter if target dimension is set
+            if self.target_dimension:
+                payload["dimensions"] = self.target_dimension
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.base_url}/api/embeddings",
+                    f"{self.base_url}/api/embed",
                     json=payload,
                     timeout=30.0
                 )
                 response.raise_for_status()
                 result = response.json()
-                embedding = np.array(result["embedding"], dtype=np.float32)
+                # The response has embeddings as an array, get the first one
+                embedding = np.array(result["embeddings"][0], dtype=np.float32)
                 logger.debug(f"Generated Ollama embedding with dimension {len(embedding)}")
                 return embedding
 

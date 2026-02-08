@@ -1,6 +1,8 @@
 """Conversation management endpoints"""
 
 import uuid
+import json
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import text
@@ -50,7 +52,9 @@ async def create_conversation(
                 "id": conversation_id,
                 "user_id": conversation_data.user_id,
                 "title": conversation_data.title,
-                "metadata": conversation_data.metadata,
+                "metadata": json.dumps(conversation_data.metadata)
+                if isinstance(conversation_data.metadata, dict)
+                else conversation_data.metadata,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -137,16 +141,15 @@ async def get_conversation(
         turn_count = len(turns)
         memory_count = len(memories)
 
-        return ConversationDetailResponse(
-            id=conversation.id,
-            user_id=conversation.user_id,
-            title=conversation.title,
-            metadata=conversation.metadata,
-            created_at=conversation.created_at,
-            updated_at=conversation.updated_at,
-            turn_count=turn_count,
-            memory_count=memory_count,
-            turns=[
+        parsed_turns = []
+        for turn in turns:
+            memory_ops = turn.memory_operations
+            if isinstance(memory_ops, str):
+                try:
+                    memory_ops = json.loads(memory_ops)
+                except json.JSONDecodeError:
+                    memory_ops = []
+            parsed_turns.append(
                 ConversationTurnResponse(
                     id=turn.id,
                     conversation_id=turn.conversation_id,
@@ -155,11 +158,29 @@ async def get_conversation(
                     assistant_response=turn.assistant_response,
                     turn_number=turn.turn_number,
                     timestamp=turn.timestamp,
-                    memory_operations=turn.memory_operations or [],
+                    memory_operations=memory_ops or [],
                     processing_time_ms=turn.processing_time_ms,
                 )
-                for turn in turns
-            ],
+            )
+
+        # Parse conversation metadata
+        metadata = conversation.metadata
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        return ConversationDetailResponse(
+            id=conversation.id,
+            user_id=conversation.user_id,
+            title=conversation.title,
+            metadata=metadata or {},
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            turn_count=turn_count,
+            memory_count=memory_count,
+            turns=parsed_turns,
             memories=[
                 {
                     "id": mem.id,
@@ -210,7 +231,11 @@ async def update_conversation(
             update_data["title"] = conversation_update.title
 
         if conversation_update.metadata is not None:
-            update_data["metadata"] = conversation_update.metadata
+            update_data["metadata"] = (
+                json.dumps(conversation_update.metadata)
+                if isinstance(conversation_update.metadata, dict)
+                else conversation_update.metadata
+            )
 
         # Build update query
         set_clauses = [f"{key} = :{key}" for key in update_data.keys()]
@@ -341,20 +366,29 @@ async def list_conversations(
         count_result = await db_session.execute(text(count_query), params)
         total_count = count_result.scalar()
 
-        return ConversationListResponse(
-            conversations=[
+        parsed_conversations = []
+        for conv in conversations:
+            metadata = conv.metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            parsed_conversations.append(
                 ConversationResponse(
                     id=conv.id,
                     user_id=conv.user_id,
                     title=conv.title,
-                    metadata=conv.metadata,
+                    metadata=metadata or {},
                     created_at=conv.created_at,
                     updated_at=conv.updated_at,
                     turn_count=conv.turn_count,
                     memory_count=conv.memory_count,
                 )
-                for conv in conversations
-            ],
+            )
+
+        return ConversationListResponse(
+            conversations=parsed_conversations,
             total_count=total_count,
             page=page,
             page_size=page_size,
@@ -424,7 +458,7 @@ async def add_conversation_turn(
                 "assistant_response": turn_data.assistant_response,
                 "turn_number": next_turn_number,
                 "timestamp": now,
-                "memory_operations": [],
+                "memory_operations": json.dumps([]),
                 "processing_time_ms": 0.0,
             },
         )
@@ -508,24 +542,33 @@ async def get_conversation_stats(
         )
         recent_conversations = recent_result.fetchall()
 
-        return ConversationStats(
-            total_conversations=total_conversations,
-            total_turns=total_turns,
-            average_turns_per_conversation=avg_turns,
-            conversations_by_user={current_user: total_conversations},
-            recent_conversations=[
+        parsed_recent = []
+        for conv in recent_conversations:
+            metadata = conv.metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            parsed_recent.append(
                 ConversationResponse(
                     id=conv.id,
                     user_id=conv.user_id,
                     title=conv.title,
-                    metadata=conv.metadata,
+                    metadata=metadata or {},
                     created_at=conv.created_at,
                     updated_at=conv.updated_at,
                     turn_count=conv.turn_count,
                     memory_count=conv.memory_count,
                 )
-                for conv in recent_conversations
-            ],
+            )
+
+        return ConversationStats(
+            total_conversations=total_conversations,
+            total_turns=total_turns,
+            average_turns_per_conversation=avg_turns,
+            conversations_by_user={current_user: total_conversations},
+            recent_conversations=parsed_recent,
         )
 
     except Exception as e:
@@ -534,7 +577,3 @@ async def get_conversation_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get conversation statistics",
         )
-
-
-# Import required modules
-from datetime import datetime

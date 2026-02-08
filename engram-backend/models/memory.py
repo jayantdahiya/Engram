@@ -50,7 +50,7 @@ class MemoryEntryResponse(MemoryEntryBase):
 class MemoryQuery(BaseModel):
     """Model for memory query requests"""
 
-    query: str = Field(..., description="Query text to search memories")
+    query: str = Field(..., min_length=1, description="Query text to search memories")
     user_id: str = Field(..., description="User ID to search memories for")
     top_k: int = Field(default=5, ge=1, le=50, description="Number of top memories to retrieve")
     similarity_threshold: float | None = Field(

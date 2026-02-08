@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+import json
 
 from api.dependencies import AuthUserDep, DatabaseDep
 from core.logging import logger
@@ -56,6 +57,21 @@ async def create_memory(
 
         memory = result.fetchone()
 
+        # Parse metadata and embedding
+        metadata = memory.metadata
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        embedding = memory.embedding
+        if isinstance(embedding, str):
+            try:
+                embedding = json.loads(embedding)
+            except json.JSONDecodeError:
+                embedding = []
+
         return MemoryEntryResponse(
             id=memory.id,
             text=memory.text,
@@ -64,8 +80,8 @@ async def create_memory(
             timestamp=memory.timestamp,
             importance_score=memory.importance_score,
             access_count=memory.access_count,
-            metadata=memory.metadata,
-            embedding_dimension=len(memory.embedding),
+            metadata=metadata or {},
+            embedding_dimension=len(embedding),
         )
 
     except Exception as e:
@@ -100,6 +116,21 @@ async def get_memory(
         # Update access count
         await memory_manager._update_access_count(memory_id, db_session)
 
+        # Parse metadata and embedding
+        metadata = memory.metadata
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        embedding = memory.embedding
+        if isinstance(embedding, str):
+            try:
+                embedding = json.loads(embedding)
+            except json.JSONDecodeError:
+                embedding = []
+
         return MemoryEntryResponse(
             id=memory.id,
             text=memory.text,
@@ -108,8 +139,8 @@ async def get_memory(
             timestamp=memory.timestamp,
             importance_score=memory.importance_score,
             access_count=memory.access_count + 1,
-            metadata=memory.metadata,
-            embedding_dimension=len(memory.embedding),
+            metadata=metadata or {},
+            embedding_dimension=len(embedding),
         )
 
     except HTTPException:
@@ -298,20 +329,37 @@ async def list_memories(
         result = await db_session.execute(text(query), params)
         memories = result.fetchall()
 
-        return [
-            MemoryEntryResponse(
-                id=mem.id,
-                text=mem.text,
-                user_id=mem.user_id,
-                conversation_id=mem.conversation_id,
-                timestamp=mem.timestamp,
-                importance_score=mem.importance_score,
-                access_count=mem.access_count,
-                metadata=mem.metadata,
-                embedding_dimension=len(mem.embedding),
+        results = []
+        for mem in memories:
+            metadata = mem.metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            embedding = mem.embedding
+            if isinstance(embedding, str):
+                try:
+                    embedding = json.loads(embedding)
+                except json.JSONDecodeError:
+                    embedding = []
+
+            results.append(
+                MemoryEntryResponse(
+                    id=mem.id,
+                    text=mem.text,
+                    user_id=mem.user_id,
+                    conversation_id=mem.conversation_id,
+                    timestamp=mem.timestamp,
+                    importance_score=mem.importance_score,
+                    access_count=mem.access_count,
+                    metadata=metadata or {},
+                    embedding_dimension=len(embedding),
+                )
             )
-            for mem in memories
-        ]
+
+        return results
 
     except Exception as e:
         logger.error(f"List memories failed: {e}")
@@ -327,7 +375,8 @@ async def get_memory_stats(current_user: str = AuthUserDep, db_session: AsyncSes
     try:
         # Get total memories
         total_result = await db_session.execute(
-            text("SELECT COUNT(*) FROM memories WHERE user_id = :user_id"), {"user_id": current_user}
+            text("SELECT COUNT(*) FROM memories WHERE user_id = :user_id"),
+            {"user_id": current_user},
         )
         total_memories = total_result.scalar()
 
@@ -366,38 +415,72 @@ async def get_memory_stats(current_user: str = AuthUserDep, db_session: AsyncSes
         )
         recent_memories = recent_result.fetchall()
 
+        parsed_most_accessed = []
+        for mem in most_accessed:
+            metadata = mem.metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            embedding = mem.embedding
+            if isinstance(embedding, str):
+                try:
+                    embedding = json.loads(embedding)
+                except json.JSONDecodeError:
+                    embedding = []
+
+            parsed_most_accessed.append(
+                MemoryEntryResponse(
+                    id=mem.id,
+                    text=mem.text,
+                    user_id=mem.user_id,
+                    conversation_id=mem.conversation_id,
+                    timestamp=mem.timestamp,
+                    importance_score=mem.importance_score,
+                    access_count=mem.access_count,
+                    metadata=metadata or {},
+                    embedding_dimension=len(embedding),
+                )
+            )
+
+        parsed_recent = []
+        for mem in recent_memories:
+            metadata = mem.metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            embedding = mem.embedding
+            if isinstance(embedding, str):
+                try:
+                    embedding = json.loads(embedding)
+                except json.JSONDecodeError:
+                    embedding = []
+
+            parsed_recent.append(
+                MemoryEntryResponse(
+                    id=mem.id,
+                    text=mem.text,
+                    user_id=mem.user_id,
+                    conversation_id=mem.conversation_id,
+                    timestamp=mem.timestamp,
+                    importance_score=mem.importance_score,
+                    access_count=mem.access_count,
+                    metadata=metadata or {},
+                    embedding_dimension=len(embedding),
+                )
+            )
+
         return MemoryStats(
             total_memories=total_memories,
             memories_by_user={current_user: total_memories},
             average_importance=float(avg_importance),
-            most_accessed_memories=[
-                MemoryEntryResponse(
-                    id=mem.id,
-                    text=mem.text,
-                    user_id=mem.user_id,
-                    conversation_id=mem.conversation_id,
-                    timestamp=mem.timestamp,
-                    importance_score=mem.importance_score,
-                    access_count=mem.access_count,
-                    metadata=mem.metadata,
-                    embedding_dimension=len(mem.embedding),
-                )
-                for mem in most_accessed
-            ],
-            recent_memories=[
-                MemoryEntryResponse(
-                    id=mem.id,
-                    text=mem.text,
-                    user_id=mem.user_id,
-                    conversation_id=mem.conversation_id,
-                    timestamp=mem.timestamp,
-                    importance_score=mem.importance_score,
-                    access_count=mem.access_count,
-                    metadata=mem.metadata,
-                    embedding_dimension=len(mem.embedding),
-                )
-                for mem in recent_memories
-            ],
+            most_accessed_memories=parsed_most_accessed,
+            recent_memories=parsed_recent,
         )
 
     except Exception as e:

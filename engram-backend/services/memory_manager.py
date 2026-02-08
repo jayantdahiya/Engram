@@ -50,10 +50,64 @@ class MemoryManager:
             # Extract entities for graph memory (Mem0g)
             await self._extract_and_store_entities(turn.user_message, turn.user_id, db_session)
 
+            # Determine memory operations
+            memory_ops = [operation_result["operation"]]
+
+            # Persist conversation turn
+            try:
+                # Get next turn number
+                turn_count_result = await db_session.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM conversation_turns WHERE conversation_id = :conversation_id"
+                    ),
+                    {"conversation_id": turn.conversation_id},
+                )
+                next_turn_number = turn_count_result.scalar() + 1
+
+                turn_id = str(uuid.uuid4())
+
+                await db_session.execute(
+                    sa_text("""
+                    INSERT INTO conversation_turns 
+                    (id, conversation_id, user_id, user_message, assistant_response, 
+                     turn_number, timestamp, memory_operations, processing_time_ms)
+                    VALUES (:id, :conversation_id, :user_id, :user_message, :assistant_response,
+                            :turn_number, :timestamp, :memory_operations, :processing_time_ms)
+                    """),
+                    {
+                        "id": turn_id,
+                        "conversation_id": turn.conversation_id,
+                        "user_id": turn.user_id,
+                        "user_message": turn.user_message,
+                        "assistant_response": turn.assistant_response,
+                        "turn_number": next_turn_number,
+                        "timestamp": turn.timestamp or datetime.utcnow(),
+                        "memory_operations": json.dumps(memory_ops),
+                        "processing_time_ms": (time.time() - start_time) * 1000,
+                    },
+                )
+
+                # Update conversation timestamp
+                await db_session.execute(
+                    sa_text(
+                        "UPDATE conversations SET updated_at = :updated_at WHERE id = :conversation_id"
+                    ),
+                    {"updated_at": datetime.utcnow(), "conversation_id": turn.conversation_id},
+                )
+
+                # Commit all changes (memory + turn)
+                await db_session.commit()
+
+            except Exception as e:
+                logger.error(f"Failed to persist conversation turn: {e}")
+                # Don't fail the request if just persistence fails?
+                # Or should we? Probably yes for data integrity.
+                raise
+
             processing_time = (time.time() - start_time) * 1000
 
             return ConversationTurnResponse(
-                turn_id=str(uuid.uuid4()),
+                turn_id=turn_id,
                 operation_performed=operation_result["operation"],
                 memory_id=operation_result.get("memory_id"),
                 processing_time_ms=processing_time,
@@ -190,7 +244,9 @@ class MemoryManager:
         try:
             # Get existing memory
             result = await db_session.execute(
-                sa_text("SELECT text, embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"),
+                sa_text(
+                    "SELECT text, embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"
+                ),
                 {"memory_id": memory_id, "user_id": user_id},
             )
             existing = result.fetchone()
@@ -198,9 +254,19 @@ class MemoryManager:
             if not existing:
                 raise ValueError(f"Memory {memory_id} not found for user {user_id}")
 
+            # Parse embedding if it's a string (SQLite case)
+            existing_embedding = existing.embedding
+            if isinstance(existing_embedding, str):
+                import json
+
+                try:
+                    existing_embedding = json.loads(existing_embedding)
+                except json.JSONDecodeError:
+                    existing_embedding = []
+
             # Concatenate new information
             updated_text = f"{existing.text}. {new_text}"
-            updated_embedding = (np.array(existing.embedding) + new_embedding) / 2
+            updated_embedding = (np.array(existing_embedding) + new_embedding) / 2
 
             # Update memory
             await db_session.execute(
@@ -238,7 +304,9 @@ class MemoryManager:
         try:
             # Get existing memory
             result = await db_session.execute(
-                sa_text("SELECT embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"),
+                sa_text(
+                    "SELECT embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"
+                ),
                 {"memory_id": memory_id, "user_id": user_id},
             )
             existing = result.fetchone()
@@ -246,8 +314,18 @@ class MemoryManager:
             if not existing:
                 raise ValueError(f"Memory {memory_id} not found for user {user_id}")
 
+            # Parse embedding if it's a string (SQLite case)
+            existing_embedding = existing.embedding
+            if isinstance(existing_embedding, str):
+                import json
+
+                try:
+                    existing_embedding = json.loads(existing_embedding)
+                except json.JSONDecodeError:
+                    existing_embedding = []
+
             # Update with consolidated text
-            updated_embedding = (np.array(existing.embedding) + new_embedding) / 2
+            updated_embedding = (np.array(existing_embedding) + new_embedding) / 2
 
             await db_session.execute(
                 sa_text("""
@@ -395,10 +473,9 @@ class MemoryManager:
         self, user_id: str, db_session: AsyncSession, limit: int = 100
     ) -> list[Any]:
         """Get memories for a user"""
-        # This would be implemented with your actual database model
         result = await db_session.execute(
             sa_text("""
-            SELECT id, text, embedding, timestamp, importance_score, access_count, metadata
+            SELECT id, text, embedding, timestamp, importance_score, access_count, metadata, conversation_id
             FROM memories
             WHERE user_id = :user_id
             ORDER BY timestamp DESC
@@ -407,7 +484,61 @@ class MemoryManager:
             {"user_id": user_id, "limit": limit},
         )
 
-        return result.fetchall()
+        rows = result.fetchall()
+        parsed_memories = []
+
+        for row in rows:
+            # Create a mutable object from the row
+            mem = type("Memory", (), {})()
+            mem.id = row.id
+            mem.text = row.text
+            mem.importance_score = row.importance_score
+            mem.access_count = row.access_count
+            mem.user_id = user_id  # Set required user_id
+            mem.conversation_id = row.conversation_id  # Set conversation_id
+
+            # Parse embedding
+            if isinstance(row.embedding, str):
+                import json
+
+                try:
+                    mem.embedding = json.loads(row.embedding)
+                except json.JSONDecodeError:
+                    # Handle case where it might be a string rep of list not valid json or just string
+                    # For sqlite test it is str([1,2,3...]) which is valid python but maybe not json?
+                    # valid json uses [1.0, 2.0]
+                    # python str uses [1.0, 2.0].
+                    # It should be fine.
+                    mem.embedding = []
+            else:
+                mem.embedding = row.embedding or []
+
+            mem.embedding_dimension = len(mem.embedding)  # Set calculated dimension
+
+            # Parse timestamp
+            if isinstance(row.timestamp, str):
+                try:
+                    mem.timestamp = datetime.fromisoformat(row.timestamp)
+                except ValueError:
+                    # Fallback or strict?
+                    mem.timestamp = datetime.utcnow()
+            else:
+                mem.timestamp = row.timestamp
+
+            # Parse metadata
+            if isinstance(row.metadata, str):
+                import json
+
+                try:
+                    mem.metadata = json.loads(row.metadata)
+                except json.JSONDecodeError:
+                    mem.metadata = {}
+            else:
+                mem.metadata = row.metadata or {}  # Ensure it is a dict if None
+
+            parsed_memories.append(mem)
+
+        return parsed_memories
 
     async def _get_user_memory_count(self, user_id: str, db_session: AsyncSession) -> int:
         """Get memory count for a user"""

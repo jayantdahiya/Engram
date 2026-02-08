@@ -19,6 +19,9 @@ class TextValidator:
         if not isinstance(text, str):
             return ""
 
+        # Remove null bytes
+        text = text.replace("\x00", "")
+
         # Remove excessive whitespace
         text = re.sub(r"\s+", " ", text.strip())
 
@@ -43,6 +46,7 @@ class TextValidator:
         sensitive_patterns = [
             r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",  # Credit card
             r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
+            r"\b\d{3}-\d{3}-\d{4}\b",  # Phone number (US)
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",  # Email
             r"\b(?:\d{1,3}\.){3}\d{1,3}\b",  # IP address
             r"\bpassword\s*[:=]\s*\S+",  # Password

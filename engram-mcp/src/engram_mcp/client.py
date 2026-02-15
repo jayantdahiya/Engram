@@ -38,11 +38,17 @@ class EngramClient:
             0.0,
         )
         self._llm_provider = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
-        self._ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self._ollama_base_url = os.environ.get(
+            "OLLAMA_BASE_URL", "http://localhost:11434"
+        )
         self._ollama_llm_model = os.environ.get("OLLAMA_LLM_MODEL", "gemma3:270m")
         self._openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-        self._openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self._openai_base_url = os.environ.get(
+            "OPENAI_BASE_URL", "https://api.openai.com/v1"
+        )
         self._openai_llm_model = os.environ.get("OPENAI_LLM_MODEL", "gpt-5-nano")
+        self._google_api_key = os.environ.get("GOOGLE_API_KEY", "")
+        self._google_llm_model = os.environ.get("GOOGLE_LLM_MODEL", "gemini-3-flash")
         self._token: str | None = None
         self._token_expires_at: float = 0.0  # epoch seconds
         self._user_id: str | None = None
@@ -53,7 +59,9 @@ class EngramClient:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        self._http = httpx.AsyncClient(base_url=self._api_url, timeout=self._timeout_seconds)
+        self._http = httpx.AsyncClient(
+            base_url=self._api_url, timeout=self._timeout_seconds
+        )
         await self._authenticate()
 
     async def stop(self) -> None:
@@ -210,7 +218,12 @@ class EngramClient:
                 mapped_conversation_id=mapped_conversation_id,
             )
         except httpx.HTTPStatusError as exc:
-            if conversation_id is None or exc.response.status_code not in {400, 404, 422, 500}:
+            if conversation_id is None or exc.response.status_code not in {
+                400,
+                404,
+                422,
+                500,
+            }:
                 if exc.response.status_code >= 500:
                     return await self._handle_ambiguous_process_turn_failure(
                         error=exc,
@@ -223,7 +236,9 @@ class EngramClient:
             # Conversation ids from external runtimes may not exist in Engram yet.
             # Auto-create/map once, then retry the write.
             self._conversation_map.pop(conversation_id, None)
-            resolved_conversation_id = await self._resolve_conversation_id(conversation_id)
+            resolved_conversation_id = await self._resolve_conversation_id(
+                conversation_id
+            )
             body["conversation_id"] = resolved_conversation_id
             try:
                 resp = await self._http.post(
@@ -259,9 +274,11 @@ class EngramClient:
         mapped_conversation_id: str | None,
     ) -> dict[str, Any]:
         """Handle timeout/5xx failures where original write outcome is uncertain."""
-        recovered_memory_id = await self._recover_memory_id_after_ambiguous_process_turn(
-            user_message=user_message,
-            conversation_id=mapped_conversation_id,
+        recovered_memory_id = (
+            await self._recover_memory_id_after_ambiguous_process_turn(
+                user_message=user_message,
+                conversation_id=mapped_conversation_id,
+            )
         )
         if recovered_memory_id is not None:
             return {
@@ -405,8 +422,13 @@ class EngramClient:
 
         context = "\n".join(f"- {snippet}" for snippet in snippets[:5])
         prompt = (
-            "Based only on the memories below, answer the question with a brief factual answer.\n"
-            "If the answer is not present, respond exactly: No information available.\n\n"
+            "Extract ONLY the specific answer from the memories below.\n"
+            "Rules:\n"
+            "- Output ONLY the answer phrase (e.g. a name, date, place, number).\n"
+            "- Do NOT write a full sentence. Do NOT add explanation or context.\n"
+            "- If the answer contains a date, output it as written in the memory.\n"
+            "- If multiple answers exist, separate with commas.\n"
+            "- If the answer is not in the memories, respond exactly: No information available.\n\n"
             f"Memories:\n{context}\n\n"
             f"Question: {question}\n"
             "Answer:"
@@ -414,6 +436,8 @@ class EngramClient:
 
         if self._llm_provider == "openai":
             return await self._generate_answer_openai(prompt)
+        if self._llm_provider == "google":
+            return await self._generate_answer_google(prompt)
         return await self._generate_answer_ollama(prompt)
 
     async def _generate_answer_ollama(self, prompt: str) -> str:
@@ -423,7 +447,7 @@ class EngramClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a factual extractor. Return only the answer text.",
+                    "content": "You are a precise entity extractor. Output ONLY the minimal answer phrase — no sentences, no explanation.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -431,7 +455,9 @@ class EngramClient:
             "stream": False,
         }
         async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-            response = await client.post(f"{self._ollama_base_url}/api/chat", json=payload)
+            response = await client.post(
+                f"{self._ollama_base_url}/api/chat", json=payload
+            )
             response.raise_for_status()
         content = response.json().get("message", {}).get("content", "")
         answer = str(content).strip()
@@ -448,7 +474,7 @@ class EngramClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a factual extractor. Return only the answer text.",
+                    "content": "You are a precise entity extractor. Output ONLY the minimal answer phrase — no sentences, no explanation.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -467,6 +493,42 @@ class EngramClient:
         content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
         answer = str(content).strip()
         return answer or "No information available."
+
+    async def _generate_answer_google(self, prompt: str) -> str:
+        """Generate answer with Google AI (Gemini) API."""
+        if not self._google_api_key:
+            raise RuntimeError("GOOGLE_API_KEY is required when LLM_PROVIDER=google")
+
+        system_instruction = {
+            "parts": [
+                {
+                    "text": "You are a precise entity extractor. Output ONLY the minimal answer phrase — no sentences, no explanation."
+                }
+            ]
+        }
+        payload = {
+            "contents": [{"parts": [{"text": prompt}], "role": "user"}],
+            "systemInstruction": system_instruction,
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": 256,
+            },
+        }
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._google_llm_model}:generateContent?key={self._google_api_key}"
+        )
+        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+        body = response.json()
+        candidates = body.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                answer = str(parts[0].get("text", "")).strip()
+                return answer if answer else "No information available."
+        return "No information available."
 
     async def create_memory(
         self,
@@ -493,18 +555,29 @@ class EngramClient:
             body["metadata"] = metadata
 
         try:
-            resp = await self._http.post("/memory/", json=body, headers=self._auth_headers())
+            resp = await self._http.post(
+                "/memory/", json=body, headers=self._auth_headers()
+            )
             resp.raise_for_status()
         except httpx.ReadTimeout:
             raise
         except httpx.HTTPStatusError as exc:
-            if conversation_id is None or exc.response.status_code not in {400, 404, 422, 500}:
+            if conversation_id is None or exc.response.status_code not in {
+                400,
+                404,
+                422,
+                500,
+            }:
                 raise
 
             self._conversation_map.pop(conversation_id, None)
-            resolved_conversation_id = await self._resolve_conversation_id(conversation_id)
+            resolved_conversation_id = await self._resolve_conversation_id(
+                conversation_id
+            )
             body["conversation_id"] = resolved_conversation_id
-            resp = await self._http.post("/memory/", json=body, headers=self._auth_headers())
+            resp = await self._http.post(
+                "/memory/", json=body, headers=self._auth_headers()
+            )
             resp.raise_for_status()
         return resp.json()
 

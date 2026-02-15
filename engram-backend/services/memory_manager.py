@@ -182,7 +182,7 @@ class MemoryManager:
         if best_memory is not None and best_similarity >= 0.95:
             return {"operation": "NOOP", "memory_id": best_memory.id, "memories_affected": 0}
 
-        if best_memory is not None and best_similarity >= 0.85:
+        if best_memory is not None and best_similarity >= 0.75:
             await self._update_memory(best_memory.id, text, embedding, user_id, db_session)
             return {"operation": "UPDATE", "memory_id": best_memory.id, "memories_affected": 1}
 
@@ -606,8 +606,14 @@ class MemoryManager:
         # Filter by threshold and get top-k
         valid_indices = np.where(composite_scores >= similarity_threshold)[0]
         if len(valid_indices) == 0:
-            # If no memories meet threshold, return top-k anyway
-            valid_indices = np.argsort(-composite_scores)[:top_k]
+            # Fallback: return top-k but only if they have some semantic relevance
+            cosine_floor = 0.3
+            floor_indices = np.where(cosine_scores >= cosine_floor)[0]
+            if len(floor_indices) > 0:
+                sorted_floor = floor_indices[np.argsort(-composite_scores[floor_indices])]
+                valid_indices = sorted_floor[:top_k]
+            else:
+                return []  # No semantically relevant memories found
 
         sorted_indices = valid_indices[np.argsort(-composite_scores[valid_indices])]
         top_indices = sorted_indices[:top_k]

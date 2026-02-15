@@ -26,8 +26,8 @@ class TestLocomoBenchmarkHelpers:
     def test_parse_recall_output(self):
         output = (
             "Found 2 memories (showing top 2):\n"
-            "  [11] (importance: 0.7) Caroline said, \"I love hiking.\"\n"
-            "  [12] (importance: 0.3) Mel said, \"I like coffee.\""
+            '  [11] (importance: 0.7) Caroline said, "I love hiking."\n'
+            '  [12] (importance: 0.3) Mel said, "I like coffee."'
         )
         hits = parse_recall_output(output)
         assert len(hits) == 2
@@ -37,8 +37,8 @@ class TestLocomoBenchmarkHelpers:
     def test_simple_extractive_answer_prefers_overlap(self):
         output = (
             "Found 2 memories (showing top 2):\n"
-            "  [11] (importance: 0.2) Caroline said, \"I love hiking.\"\n"
-            "  [12] (importance: 0.9) Mel said, \"I like coffee.\""
+            '  [11] (importance: 0.2) Caroline said, "I love hiking."\n'
+            '  [12] (importance: 0.9) Mel said, "I like coffee."'
         )
         hits = parse_recall_output(output)
         answer = simple_extractive_answer("What does Caroline love?", hits)
@@ -60,3 +60,32 @@ class TestLocomoBenchmarkHelpers:
             mock_client,
         )
         assert answer == "7 May 2023"
+
+    @pytest.mark.asyncio
+    async def test_llm_extractive_answer_no_hits(self):
+        """Empty hits should return 'No information available.' immediately."""
+        mock_client = AsyncMock()
+        answer = await llm_extractive_answer("What is X?", [], mock_client)
+        assert answer == "No information available."
+        mock_client.generate_answer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_llm_extractive_answer_fallback_on_error(self):
+        """If generate_answer raises, fall back to simple_extractive_answer."""
+        output = (
+            "Found 1 memories (showing top 1):\n"
+            "  [11] (importance: 0.5) Caroline went on 7 May 2023."
+        )
+        hits = parse_recall_output(output)
+        mock_client = AsyncMock()
+        mock_client.generate_answer = AsyncMock(
+            side_effect=RuntimeError("LLM unavailable")
+        )
+
+        answer = await llm_extractive_answer(
+            "When did Caroline go?",
+            hits,
+            mock_client,
+        )
+        # Falls back to simple_extractive_answer which returns the memory text
+        assert "7 May 2023" in answer

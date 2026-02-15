@@ -210,7 +210,7 @@ class LocomoMCPBenchmark:
                 speaker = turn.get("speaker", "Speaker")
                 dia_id = turn.get("dia_id", "")
                 text = turn.get("text", "")
-                memory_text = f"({date_time}) {speaker} said, \"{text}\""
+                memory_text = f'({date_time}) {speaker} said, "{text}"'
                 metadata = {
                     "source": "locomo_benchmark",
                     "run_id": self.run_id,
@@ -282,7 +282,9 @@ class LocomoMCPBenchmark:
                 if self._client is None:
                     prediction = "No information available."
                 else:
-                    prediction = await llm_extractive_answer(question, hits, self._client)
+                    prediction = await llm_extractive_answer(
+                        question, hits, self._client
+                    )
             else:
                 prediction = simple_extractive_answer(question, hits)
 
@@ -372,7 +374,9 @@ def f1_multi_local(prediction: str, ground_truth: str) -> float:
         return 0.0
     per_gt = []
     for gt in ground_truths:
-        per_gt.append(max((f1_score_local(pred, gt) for pred in predictions), default=0.0))
+        per_gt.append(
+            max((f1_score_local(pred, gt) for pred in predictions), default=0.0)
+        )
     return sum(per_gt) / len(per_gt)
 
 
@@ -401,7 +405,11 @@ def eval_question_answering_fallback(
             score = f1_multi_local(output, str(answer))
         elif category == 5:
             lower = output.lower()
-            score = 1.0 if ("no information available" in lower or "not mentioned" in lower) else 0.0
+            score = (
+                1.0
+                if ("no information available" in lower or "not mentioned" in lower)
+                else 0.0
+            )
         else:
             score = 0.0
         scores.append(score)
@@ -410,7 +418,9 @@ def eval_question_answering_fallback(
         evidence = line.get("evidence", [])
         if ctx_key in line and evidence:
             predicted_ctx = line.get(ctx_key, [])
-            recall_acc = sum(1 for ev in evidence if ev in predicted_ctx) / len(evidence)
+            recall_acc = sum(1 for ev in evidence if ev in predicted_ctx) / len(
+                evidence
+            )
             recalls.append(float(recall_acc))
         else:
             recalls.append(1.0)
@@ -452,11 +462,18 @@ async def run_locomo_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     locomo_root = Path(args.locomo_root).resolve()
-    data_file = Path(args.data_file).resolve() if args.data_file else locomo_root / "data/locomo10.json"
+    data_file = (
+        Path(args.data_file).resolve()
+        if args.data_file
+        else locomo_root / "data/locomo10.json"
+    )
     if not data_file.exists():
         raise FileNotFoundError(f"LOCOMO data file not found: {data_file}")
 
-    run_id = args.run_id or f"locomo-mcp-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
+    run_id = (
+        args.run_id
+        or f"locomo-mcp-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
+    )
     prediction_key = f"{args.prediction_prefix}_prediction"
     score_key = f"{args.prediction_prefix}_f1"
 
@@ -487,9 +504,11 @@ async def run_locomo_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         keep_data=args.keep_data,
     ) as runner:
         for sample in samples:
-            sample_created_ids, memory_id_to_dia_id, sample_ingest_failures = (
-                await runner.ingest_sample(sample)
-            )
+            (
+                sample_created_ids,
+                memory_id_to_dia_id,
+                sample_ingest_failures,
+            ) = await runner.ingest_sample(sample)
             failed_ingest_calls += sample_ingest_failures
             created_memory_ids.update(sample_created_ids)
 
@@ -501,7 +520,9 @@ async def run_locomo_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             )
             failed_recall_calls += sample_recall_failures
 
-            scores, _, recalls = eval_question_answering(evaluated["qa"], prediction_key)
+            scores, _, recalls = eval_question_answering(
+                evaluated["qa"], prediction_key
+            )
             for idx, qa in enumerate(evaluated["qa"]):
                 qa[score_key] = round(float(scores[idx]), 6)
                 qa[prediction_key + "_recall"] = round(float(recalls[idx]), 6)
@@ -552,8 +573,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate MCP memory pipeline on official LOCOMO QA benchmark.",
     )
-    parser.add_argument("--locomo-root", required=True, help="Path to cloned LOCOMO repository")
-    parser.add_argument("--data-file", default=None, help="Optional path to locomo*.json")
+    parser.add_argument(
+        "--locomo-root", required=True, help="Path to cloned LOCOMO repository"
+    )
+    parser.add_argument(
+        "--data-file", default=None, help="Optional path to locomo*.json"
+    )
     parser.add_argument("--api-url", default=None, help="Engram backend URL")
     parser.add_argument("--username", default=None, help="Engram username")
     parser.add_argument("--password", default=None, help="Engram password")
@@ -568,16 +593,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--answer-mode",
         choices=["extractive", "llm", "oracle"],
-        default="extractive",
+        default="llm",
         help="Answer generation strategy after recall",
     )
     parser.add_argument(
         "--scoring-profile",
         choices=["balanced", "semantic"],
-        default="balanced",
+        default="semantic",
         help="Retrieval scoring profile to use for recall queries",
     )
-    parser.add_argument("--max-samples", type=int, default=0, help="0 means all samples")
+    parser.add_argument(
+        "--max-samples", type=int, default=0, help="0 means all samples"
+    )
     parser.add_argument(
         "--max-questions-per-sample",
         type=int,

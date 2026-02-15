@@ -180,3 +180,64 @@ class TestMemoryManager:
         custom_manager = MemoryManager()
         custom_manager.max_memories_per_user = 5000
         assert custom_manager.max_memories_per_user == 5000
+
+    @pytest.mark.asyncio
+    async def test_classify_operation_update_at_075_threshold(
+        self, memory_manager, mock_db_session, sample_turn
+    ):
+        """Similarity >= 0.75 should trigger UPDATE without LLM classification."""
+
+        mock_memory = Mock()
+        mock_memory.text = "I am vegetarian"
+        mock_memory.id = 1
+        mock_memory.embedding = np.random.rand(1536).tolist()
+        mock_memory.metadata = "{}"
+
+        with (
+            patch("services.memory_manager.embedding_service") as mock_embedding,
+            patch("services.memory_manager.llm_service") as mock_llm,
+            patch.object(
+                memory_manager, "_get_user_memories", return_value=[mock_memory]
+            ),
+            patch.object(memory_manager, "_update_memory"),
+            patch.object(memory_manager, "_extract_and_store_entities"),
+        ):
+            mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
+            # Similarity of 0.78 is above the new 0.75 threshold
+            mock_embedding.calculate_similarity = AsyncMock(return_value=0.78)
+
+            result = await memory_manager.process_conversation_turn(
+                sample_turn, mock_db_session
+            )
+
+            assert result.operation_performed == "UPDATE"
+            assert result.memory_id == 1
+            # LLM classifier should NOT have been called
+            mock_llm.classify_memory_operation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_acan_retrieval_returns_empty_below_cosine_floor(
+        self, memory_manager
+    ):
+        """Memories below cosine floor (0.3) should not be returned."""
+
+        mock_memory = Mock()
+        mock_memory.embedding = np.random.rand(1536).tolist()
+        mock_memory.timestamp = datetime.now()
+        mock_memory.importance_score = 10.0  # High importance
+        mock_memory.access_count = 100  # High access count
+
+        with patch("services.memory_manager.embedding_service") as mock_embedding:
+            # Very low cosine similarity — completely unrelated query
+            mock_embedding.calculate_similarity = AsyncMock(return_value=0.1)
+
+            result = await memory_manager._acan_retrieval(
+                query_embedding=np.random.rand(1536),
+                memories=[mock_memory],
+                top_k=5,
+                similarity_threshold=0.7,
+                scoring_profile="semantic",
+            )
+
+            # With cosine floor of 0.3, no memories should be returned
+            assert result == []

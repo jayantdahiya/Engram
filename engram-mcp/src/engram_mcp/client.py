@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import time
 from typing import Any
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 class EngramClient:
@@ -20,6 +25,24 @@ class EngramClient:
 
         self._http: httpx.AsyncClient | None = None
         self._timeout_seconds = float(os.environ.get("ENGRAM_HTTP_TIMEOUT", "30"))
+        # Safe by default: avoid ambiguous second writes after timeout/5xx.
+        self._unsafe_process_turn_fallback = self._env_bool(
+            "ENGRAM_UNSAFE_PROCESS_TURN_FALLBACK", False
+        )
+        self._process_turn_recovery_attempts = max(
+            self._env_int("ENGRAM_PROCESS_TURN_RECOVERY_ATTEMPTS", 3),
+            1,
+        )
+        self._process_turn_recovery_delay_seconds = max(
+            self._env_float("ENGRAM_PROCESS_TURN_RECOVERY_DELAY_SECONDS", 1.0),
+            0.0,
+        )
+        self._llm_provider = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
+        self._ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self._ollama_llm_model = os.environ.get("OLLAMA_LLM_MODEL", "gemma3:270m")
+        self._openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        self._openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self._openai_llm_model = os.environ.get("OPENAI_LLM_MODEL", "gpt-5-nano")
         self._token: str | None = None
         self._token_expires_at: float = 0.0  # epoch seconds
         self._user_id: str | None = None
@@ -70,7 +93,7 @@ class EngramClient:
             "/auth/register",
             json={
                 "username": self._username,
-                "email": f"{self._username}@engram.local",
+                "email": f"{self._username}@example.com",
                 "password": self._password,
             },
         )
@@ -99,6 +122,33 @@ class EngramClient:
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
+
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
 
     async def _resolve_conversation_id(self, external_conversation_id: str) -> str:
         """Map an external conversation id to a valid backend conversation id."""
@@ -152,12 +202,22 @@ class EngramClient:
                 headers=self._auth_headers(),
             )
             resp.raise_for_status()
-        except httpx.ReadTimeout:
-            return await self._fallback_process_turn(user_message, conversation_id)
+        except httpx.ReadTimeout as exc:
+            return await self._handle_ambiguous_process_turn_failure(
+                error=exc,
+                user_message=user_message,
+                conversation_id=conversation_id,
+                mapped_conversation_id=mapped_conversation_id,
+            )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code >= 500:
-                return await self._fallback_process_turn(user_message, conversation_id)
-            if conversation_id is None or exc.response.status_code not in {400, 404, 422}:
+            if conversation_id is None or exc.response.status_code not in {400, 404, 422, 500}:
+                if exc.response.status_code >= 500:
+                    return await self._handle_ambiguous_process_turn_failure(
+                        error=exc,
+                        user_message=user_message,
+                        conversation_id=conversation_id,
+                        mapped_conversation_id=mapped_conversation_id,
+                    )
                 raise
 
             # Conversation ids from external runtimes may not exist in Engram yet.
@@ -172,13 +232,90 @@ class EngramClient:
                     headers=self._auth_headers(),
                 )
                 resp.raise_for_status()
-            except httpx.ReadTimeout:
-                return await self._fallback_process_turn(user_message, conversation_id)
+            except httpx.ReadTimeout as retry_exc:
+                return await self._handle_ambiguous_process_turn_failure(
+                    error=retry_exc,
+                    user_message=user_message,
+                    conversation_id=conversation_id,
+                    mapped_conversation_id=resolved_conversation_id,
+                )
             except httpx.HTTPStatusError as retry_exc:
                 if retry_exc.response.status_code >= 500:
-                    return await self._fallback_process_turn(user_message, conversation_id)
+                    return await self._handle_ambiguous_process_turn_failure(
+                        error=retry_exc,
+                        user_message=user_message,
+                        conversation_id=conversation_id,
+                        mapped_conversation_id=resolved_conversation_id,
+                    )
                 raise
         return resp.json()
+
+    async def _handle_ambiguous_process_turn_failure(
+        self,
+        *,
+        error: Exception,
+        user_message: str,
+        conversation_id: str | None,
+        mapped_conversation_id: str | None,
+    ) -> dict[str, Any]:
+        """Handle timeout/5xx failures where original write outcome is uncertain."""
+        recovered_memory_id = await self._recover_memory_id_after_ambiguous_process_turn(
+            user_message=user_message,
+            conversation_id=mapped_conversation_id,
+        )
+        if recovered_memory_id is not None:
+            return {
+                "operation_performed": "ADD",
+                "memory_id": recovered_memory_id,
+                "memories_affected": 1,
+                "processing_time_ms": 0.0,
+                "recovered_from_ambiguous_failure": True,
+            }
+
+        if self._unsafe_process_turn_fallback:
+            logger.warning(
+                "Using unsafe process_turn fallback after ambiguous failure; "
+                "this may create duplicate memories."
+            )
+            return await self._fallback_process_turn(user_message, conversation_id)
+
+        raise error
+
+    async def _recover_memory_id_after_ambiguous_process_turn(
+        self,
+        *,
+        user_message: str,
+        conversation_id: str | None,
+    ) -> int | None:
+        """Attempt to discover whether process-turn already created the memory."""
+        params: dict[str, Any] = {"limit": 100, "offset": 0}
+        if conversation_id is not None:
+            params["conversation_id"] = conversation_id
+
+        for attempt in range(self._process_turn_recovery_attempts):
+            if attempt > 0 and self._process_turn_recovery_delay_seconds > 0:
+                await asyncio.sleep(self._process_turn_recovery_delay_seconds)
+
+            try:
+                response = await self._http.get(
+                    "/memory/",
+                    params=params,
+                    headers=self._auth_headers(),
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                continue
+
+            memories = response.json()
+            for mem in memories:
+                if mem.get("text") == user_message:
+                    memory_id = mem.get("id")
+                    if isinstance(memory_id, int):
+                        return memory_id
+                    if isinstance(memory_id, str) and memory_id.isdigit():
+                        return int(memory_id)
+
+        return None
 
     async def _fallback_process_turn(
         self, user_message: str, conversation_id: str | None
@@ -198,17 +335,26 @@ class EngramClient:
             "fallback_used": True,
         }
 
-    async def query_memories(self, query: str, top_k: int = 5) -> dict[str, Any]:
+    async def query_memories(
+        self,
+        query: str,
+        top_k: int = 5,
+        scoring_profile: str | None = None,
+    ) -> dict[str, Any]:
         """POST /memory/query — semantic search via ACAN retrieval."""
         await self._ensure_token()
+        payload: dict[str, Any] = {
+            "query": query,
+            "user_id": self._user_id,
+            "top_k": top_k,
+        }
+        if scoring_profile is not None:
+            payload["scoring_profile"] = scoring_profile
+
         try:
             resp = await self._http.post(
                 "/memory/query",
-                json={
-                    "query": query,
-                    "user_id": self._user_id,
-                    "top_k": top_k,
-                },
+                json=payload,
                 headers=self._auth_headers(),
             )
             resp.raise_for_status()
@@ -247,6 +393,80 @@ class EngramClient:
             "processing_time_ms": 0.0,
             "fallback_used": True,
         }
+
+    async def generate_answer(self, question: str, context_memories: list[str]) -> str:
+        """Generate concise factual answer from retrieved memory snippets."""
+        if not context_memories:
+            return "No information available."
+
+        snippets = [text.strip() for text in context_memories if text and text.strip()]
+        if not snippets:
+            return "No information available."
+
+        context = "\n".join(f"- {snippet}" for snippet in snippets[:5])
+        prompt = (
+            "Based only on the memories below, answer the question with a brief factual answer.\n"
+            "If the answer is not present, respond exactly: No information available.\n\n"
+            f"Memories:\n{context}\n\n"
+            f"Question: {question}\n"
+            "Answer:"
+        )
+
+        if self._llm_provider == "openai":
+            return await self._generate_answer_openai(prompt)
+        return await self._generate_answer_ollama(prompt)
+
+    async def _generate_answer_ollama(self, prompt: str) -> str:
+        """Generate answer with Ollama Chat API."""
+        payload = {
+            "model": self._ollama_llm_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a factual extractor. Return only the answer text.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.0,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+            response = await client.post(f"{self._ollama_base_url}/api/chat", json=payload)
+            response.raise_for_status()
+        content = response.json().get("message", {}).get("content", "")
+        answer = str(content).strip()
+        return answer or "No information available."
+
+    async def _generate_answer_openai(self, prompt: str) -> str:
+        """Generate answer with OpenAI Chat Completions API."""
+        if not self._openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+
+        payload = {
+            "model": self._openai_llm_model,
+            "temperature": 0.0,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a factual extractor. Return only the answer text.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        }
+        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+            response = await client.post(
+                f"{self._openai_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+        body = response.json()
+        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+        answer = str(content).strip()
+        return answer or "No information available."
 
     async def create_memory(
         self,

@@ -176,3 +176,40 @@ class TestEmbeddingService:
             result = await embedding_service.get_embedding("test text")
 
             assert isinstance(result, np.ndarray)
+
+    @pytest.mark.asyncio
+    async def test_get_embedding_with_google(self, embedding_service):
+        """Test embedding generation via Google AI API."""
+        embedding_service.embedding_provider = "google"
+        embedding_service.google_api_key = "test-google-key"
+        embedding_service.google_embedding_model = "gemini-embedding-001"
+        embedding_service.google_base_url = (
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
+        embedding_service.embedding_model = "gemini-embedding-001"
+
+        mock_response = {"embedding": {"values": np.random.rand(1536).tolist()}}
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            mock_instance.post.return_value = MagicMock(
+                json=lambda: mock_response, raise_for_status=MagicMock()
+            )
+
+            result = await embedding_service.get_embedding("test text")
+
+            assert isinstance(result, np.ndarray)
+            assert result.dtype == np.float32
+
+    @pytest.mark.asyncio
+    async def test_google_embedding_no_api_key(self, embedding_service):
+        """Test error when Google API key is missing."""
+        embedding_service.google_api_key = ""
+        embedding_service.google_embedding_model = "gemini-embedding-001"
+        embedding_service.google_base_url = (
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
+
+        with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+            await embedding_service._get_google_embedding_result("test text")

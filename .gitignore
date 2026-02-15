@@ -290,3 +290,4 @@ grafana_data/
 
 # Project Docs
 .docs
+.benchmark

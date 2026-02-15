@@ -1,5 +1,6 @@
 """Unit tests for memory manager"""
 
+from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
@@ -45,6 +46,7 @@ class TestMemoryManager:
         self, memory_manager, mock_db_session, sample_turn
     ):
         """Test processing conversation turn with ADD operation"""
+        sample_turn.conversation_id = None
 
         with (
             patch("services.memory_manager.embedding_service") as mock_embedding,
@@ -53,7 +55,7 @@ class TestMemoryManager:
             patch.object(memory_manager, "_add_memory", return_value=1),
             patch.object(memory_manager, "_extract_and_store_entities"),
         ):
-            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+            mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
 
             result = await memory_manager.process_conversation_turn(sample_turn, mock_db_session)
 
@@ -66,11 +68,14 @@ class TestMemoryManager:
         self, memory_manager, mock_db_session, sample_turn
     ):
         """Test processing conversation turn with UPDATE operation"""
+        sample_turn.conversation_id = None
 
         # Mock existing memory
         mock_memory = Mock()
         mock_memory.text = "I am vegetarian"
         mock_memory.id = 1
+        mock_memory.embedding = np.random.rand(1536).tolist()
+        mock_memory.metadata = {}
 
         with (
             patch("services.memory_manager.embedding_service") as mock_embedding,
@@ -79,11 +84,12 @@ class TestMemoryManager:
             patch.object(memory_manager, "_update_memory"),
             patch.object(memory_manager, "_extract_and_store_entities"),
         ):
-            mock_embedding.get_embedding.return_value = np.random.rand(1536)
-            mock_llm.classify_memory_operation.return_value = {
+            mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
+            mock_embedding.calculate_similarity = AsyncMock(return_value=0.7)
+            mock_llm.classify_memory_operation = AsyncMock(return_value={
                 "operation": "UPDATE",
                 "related_memory_indices": [0],
-            }
+            })
 
             result = await memory_manager.process_conversation_turn(sample_turn, mock_db_session)
 
@@ -96,19 +102,24 @@ class TestMemoryManager:
 
         # Mock user memories
         mock_memory = Mock()
+        mock_memory.id = 1
+        mock_memory.text = "I am vegetarian and avoid dairy."
         mock_memory.embedding = np.random.rand(1536).tolist()
-        mock_memory.timestamp = Mock()
-        mock_memory.timestamp.timestamp.return_value = 1234567890
+        mock_memory.embedding_dimension = 1536
+        mock_memory.timestamp = datetime.utcnow()
         mock_memory.importance_score = 0.5
         mock_memory.access_count = 5
+        mock_memory.metadata = {}
+        mock_memory.user_id = "test-user"
+        mock_memory.conversation_id = "test-conversation"
 
         with (
             patch.object(memory_manager, "_get_user_memories", return_value=[mock_memory]),
             patch.object(memory_manager, "_update_access_count"),
             patch("services.memory_manager.embedding_service") as mock_embedding,
         ):
-            mock_embedding.get_embedding.return_value = np.random.rand(1536)
-            mock_embedding.calculate_similarity.return_value = 0.8
+            mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
+            mock_embedding.calculate_similarity = AsyncMock(return_value=0.8)
 
             query = MemoryQuery(
                 query="What are my dietary preferences?", user_id="test-user", top_k=5
@@ -128,7 +139,7 @@ class TestMemoryManager:
             patch.object(memory_manager, "_get_user_memories", return_value=[]),
             patch("services.memory_manager.embedding_service") as mock_embedding,
         ):
-            mock_embedding.get_embedding.return_value = np.random.rand(1536)
+            mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
 
             query = MemoryQuery(
                 query="What are my dietary preferences?", user_id="test-user", top_k=5

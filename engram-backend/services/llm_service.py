@@ -78,33 +78,199 @@ class OpenAIProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> str:
-        """Generate response using OpenAI Chat API"""
+        """Generate response using OpenAI Chat Completions with Responses fallback."""
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+
         try:
-            payload = {
-                "model": self.model,
-                "messages": messages,
+            return await self._generate_with_chat_completions(messages, temperature, max_tokens)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in {400, 404, 422}:
+                logger.warning(
+                    "OpenAI chat.completions failed for model "
+                    f"{self.model}, retrying with responses API: {e.response.text}"
+                )
+                return await self._generate_with_responses_api(messages, temperature, max_tokens)
+            logger.error(f"OpenAI response generation failed: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"OpenAI response generation failed: {e}")
+            raise
+
+    async def _generate_with_chat_completions(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> str:
+        """Generate response using OpenAI chat/completions."""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+
+        if max_tokens:
+            payload["max_completion_tokens"] = max_tokens
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            ).strip()
+        return str(content)
+
+    async def _generate_with_responses_api(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> str:
+        """Generate response using OpenAI responses API."""
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "input": messages,
+            "temperature": temperature,
+        }
+
+        if max_tokens:
+            payload["max_output_tokens"] = max_tokens
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/responses",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+
+        result = response.json()
+
+        output_text = result.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        output_items = result.get("output", [])
+        if isinstance(output_items, list):
+            chunks: list[str] = []
+            for item in output_items:
+                if not isinstance(item, dict):
+                    continue
+                content_items = item.get("content", [])
+                if not isinstance(content_items, list):
+                    continue
+                for content in content_items:
+                    if not isinstance(content, dict):
+                        continue
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+            if chunks:
+                return "".join(chunks).strip()
+
+        raise ValueError("Could not parse text output from OpenAI responses API")
+
+
+class GoogleAIProvider(BaseLLMProvider):
+    """Google AI (Gemini) LLM provider for cloud inference"""
+
+    def __init__(self):
+        self.api_key = settings.google_api_key
+        self.model = settings.google_llm_model
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+        if not self.api_key:
+            logger.warning("Google AI API key not configured")
+
+    def _convert_messages(self, messages: list[dict[str, str]]) -> tuple[list[dict], dict | None]:
+        """Convert OpenAI-style messages to Gemini contents format.
+
+        Returns (contents, system_instruction) tuple.
+        """
+        contents: list[dict] = []
+        system_instruction: dict | None = None
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            text = msg.get("content", "")
+
+            if role == "system":
+                system_instruction = {"parts": [{"text": text}]}
+            else:
+                gemini_role = "model" if role == "assistant" else "user"
+                contents.append({"role": gemini_role, "parts": [{"text": text}]})
+
+        return contents, system_instruction
+
+    async def generate_response(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Generate response using Gemini REST API."""
+        if not self.api_key:
+            raise RuntimeError("GOOGLE_API_KEY is required when LLM_PROVIDER=google")
+
+        contents, system_instruction = self._convert_messages(messages)
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
                 "temperature": temperature,
-            }
+            },
+        }
 
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
+        if max_tokens:
+            payload["generationConfig"]["maxOutputTokens"] = max_tokens
 
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+
+        try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    f"{self.base_url}/models/{self.model}:generateContent",
+                    headers={"Content-Type": "application/json"},
+                    params={"key": self.api_key},
                     json=payload,
                     timeout=60.0,
                 )
                 response.raise_for_status()
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
+
+            result = response.json()
+            candidates = result.get("candidates", [])
+            if not candidates:
+                raise ValueError("Gemini response missing candidates")
+
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            if not parts:
+                raise ValueError("Gemini response missing content parts")
+
+            return "".join(part.get("text", "") for part in parts).strip()
 
         except Exception as e:
-            logger.error(f"OpenAI response generation failed: {e}")
+            logger.error(f"Google AI response generation failed: {e}")
             raise
 
 
@@ -121,6 +287,8 @@ class LLMService:
 
         if provider_name == "openai":
             return OpenAIProvider()
+        elif provider_name == "google":
+            return GoogleAIProvider()
         elif provider_name == "ollama":
             return OllamaProvider()
         else:

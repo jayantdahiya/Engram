@@ -267,7 +267,7 @@ class TestACANRetrievalSystem:
         low_importance_memory = {
             "id": 2,
             "text": "Less important",
-            "embedding": np.random.rand(1536).tolist(),  # Random similarity
+            "embedding": np.zeros(1536).tolist(),  # Zero similarity
             "timestamp": current_time - 86400 * 30,  # Old
             "importance_score": 1.0,  # Low importance
             "access_count": 1,  # Low access

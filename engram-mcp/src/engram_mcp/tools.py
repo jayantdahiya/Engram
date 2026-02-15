@@ -41,6 +41,10 @@ def register_tools(mcp_instance: FastMCP) -> None:
             parts.append(f"Memory ID: {mid}")
         parts.append(f"Memories affected: {affected}")
         parts.append(f"Processing time: {ms:.0f}ms")
+        if result.get("recovered_from_ambiguous_failure"):
+            parts.append("Recovered: true")
+        if result.get("fallback_used"):
+            parts.append("Fallback: true")
         return " | ".join(parts)
     
     @mcp_instance.tool
@@ -48,6 +52,7 @@ def register_tools(mcp_instance: FastMCP) -> None:
         query: str,
         ctx: Context,
         top_k: int | None = None,
+        scoring_profile: str | None = None,
     ) -> str:
         """Search memories using semantic similarity (ACAN retrieval). Returns the most relevant memories."""
         if top_k is None:
@@ -55,7 +60,10 @@ def register_tools(mcp_instance: FastMCP) -> None:
         if top_k > 20:
             top_k = 20
         client = _get_client(ctx)
-        result = await client.query_memories(query, top_k)
+        if scoring_profile is not None:
+            result = await client.query_memories(query, top_k, scoring_profile=scoring_profile)
+        else:
+            result = await client.query_memories(query, top_k)
         memories = result.get("memories", [])
         total = result.get("total_found", 0)
         if not memories:
@@ -67,6 +75,31 @@ def register_tools(mcp_instance: FastMCP) -> None:
             score = mem.get("importance_score", 0)
             lines.append(f"  [{mid}] (importance: {score}) {text}")
         return "\n".join(lines)
+
+    @mcp_instance.tool
+    async def answer(
+        question: str,
+        ctx: Context,
+        top_k: int = 5,
+        scoring_profile: str = "semantic",
+    ) -> str:
+        """Recall relevant memories and return a concise factual answer."""
+        if top_k > 20:
+            top_k = 20
+        if top_k < 1:
+            top_k = 1
+
+        client = _get_client(ctx)
+        recall_result = await client.query_memories(
+            question,
+            top_k,
+            scoring_profile=scoring_profile,
+        )
+        memories = recall_result.get("memories", [])
+        context = [str(mem.get("text", "")).strip() for mem in memories if mem.get("text")]
+        if not context:
+            return "No information available."
+        return await client.generate_answer(question, context)
     
     @mcp_instance.tool
     async def store_memory(

@@ -87,8 +87,19 @@ cp env.example .env
 Edit `.env` with your configuration:
 
 ```env
-# OpenAI Configuration
+# Provider Configuration
+LLM_PROVIDER=openai
+EMBEDDING_PROVIDER=openai
+
+# OpenAI Configuration (required when using openai providers)
 OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_LLM_MODEL=gpt-5-nano
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# Ollama Configuration (required when using ollama providers)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_LLM_MODEL=gemma3:270m
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text:latest
 
 # Security
 SECRET_KEY=your_secret_key_here
@@ -215,11 +226,19 @@ curl http://localhost:8000/health/detailed
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | Required |
+| `LLM_PROVIDER` | LLM backend provider (`ollama`, `openai`) | `ollama` |
+| `EMBEDDING_PROVIDER` | Embedding backend provider (`ollama`, `openai`, `local`) | `ollama` |
+| `OPENAI_API_KEY` | OpenAI API key (required when OpenAI provider is selected) | Empty |
+| `OPENAI_LLM_MODEL` | OpenAI chat model | `gpt-5-nano` |
+| `OPENAI_EMBEDDING_MODEL` | OpenAI embedding model | `text-embedding-3-small` |
+| `OLLAMA_BASE_URL` | Ollama API base URL | `http://localhost:11434` |
+| `OLLAMA_LLM_MODEL` | Ollama chat model | `gemma3:270m` |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text:latest` |
 | `SECRET_KEY` | JWT secret key | Required |
 | `DATABASE_URL` | PostgreSQL connection string | Auto-generated |
 | `REDIS_URL` | Redis connection string | Auto-generated |
 | `NEO4J_URI` | Neo4j connection string | Auto-generated |
+| `EMBEDDING_DIMENSION` | Target embedding dimension used for storage | `1536` |
 | `SIMILARITY_THRESHOLD` | Memory similarity threshold | 0.75 |
 | `MAX_MEMORIES_PER_USER` | Max memories per user | 10000 |
 

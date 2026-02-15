@@ -67,6 +67,7 @@ class ACANRetrievalSystem:
         memories: list[dict[str, Any]],
         current_time: float,
         user_context: dict[str, Any] | None = None,
+        scoring_profile: str = "balanced",
     ) -> np.ndarray:
         """Compute composite relevance scores using multiple signals
         
@@ -115,15 +116,18 @@ class ACANRetrievalSystem:
         if user_context:
             context_weights = await self._compute_context_weights(memories, user_context)
 
-        # Weighted combination with learned weights
-        composite_scores = (
-            0.35 * attention_scores  # Cross-attention
-            + 0.25 * cosine_scores  # Semantic similarity
-            + 0.15 * recency_weights  # Temporal relevance
-            + 0.10 * importance_weights  # Memory importance
-            + 0.10 * access_weights  # Access frequency
-            + 0.05 * context_weights  # Context relevance
-        )
+        if scoring_profile == "semantic":
+            # QA benchmark profile: disable behavioral/temporal boosts.
+            composite_scores = 0.55 * cosine_scores + 0.45 * attention_scores
+        else:
+            composite_scores = (
+                0.40 * cosine_scores  # Semantic relevance primary
+                + 0.30 * attention_scores  # Cross-attention secondary
+                + 0.05 * recency_weights  # Reduced temporal bias
+                + 0.10 * importance_weights  # Memory importance
+                + 0.10 * access_weights  # Access frequency
+                + 0.05 * context_weights  # Context relevance
+            )
 
         return composite_scores
 
@@ -157,14 +161,18 @@ class ACANRetrievalSystem:
 
         attention_scores = np.array(attention_scores)
 
-        # Apply softmax normalization
-        attention_probs = np.exp(attention_scores - np.max(attention_scores))
-        attention_probs = attention_probs / np.sum(attention_probs)
+        if attention_scores.size == 0:
+            return attention_scores
 
-        return attention_probs
+        min_score = float(np.min(attention_scores))
+        max_score = float(np.max(attention_scores))
+        if np.isclose(max_score, min_score):
+            return np.ones_like(attention_scores)
+
+        return (attention_scores - min_score) / (max_score - min_score)
 
     def _recency_weight(
-        self, timestamp: float, current_time: float, half_life_hours: float = 72.0
+        self, timestamp: float, current_time: float, half_life_hours: float = 8760.0
     ) -> float:
         """Calculate recency weight with exponential decay"""
         age_hours = max(0.0, (current_time - timestamp) / 3600.0)

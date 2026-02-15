@@ -22,7 +22,10 @@ class TestMemoryManager:
     def mock_db_session(self):
         """Create mock database session"""
         session = AsyncMock()
-        session.execute = AsyncMock()
+        # db_session.execute() returns a result whose .scalar() gives an int
+        mock_result = Mock()
+        mock_result.scalar = Mock(return_value=0)
+        session.execute = AsyncMock(return_value=mock_result)
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
         return session
@@ -70,10 +73,12 @@ class TestMemoryManager:
     ):
         """Test processing conversation turn with UPDATE operation"""
 
-        # Mock existing memory
+        # Mock existing memory with embedding + metadata for the cosine pre-check
         mock_memory = Mock()
         mock_memory.text = "I am vegetarian"
         mock_memory.id = 1
+        mock_memory.embedding = np.random.rand(1536).tolist()
+        mock_memory.metadata = "{}"
 
         with (
             patch("services.memory_manager.embedding_service") as mock_embedding,
@@ -85,6 +90,8 @@ class TestMemoryManager:
             patch.object(memory_manager, "_extract_and_store_entities"),
         ):
             mock_embedding.get_embedding = AsyncMock(return_value=np.random.rand(1536))
+            # Return 0.7 so it falls below the 0.85 threshold and goes to LLM classification
+            mock_embedding.calculate_similarity = AsyncMock(return_value=0.7)
             mock_llm.classify_memory_operation = AsyncMock(
                 return_value={
                     "operation": "UPDATE",

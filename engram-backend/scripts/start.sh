@@ -17,16 +17,45 @@ if [ ! -f .env ]; then
     echo "⚠️  .env file not found. Creating from template..."
     cp env.example .env
     echo "📝 Please edit .env file with your configuration before continuing."
-    echo "   Required: OLLAMA_BASE_URL, SECRET_KEY"
+    echo "   Required: SECRET_KEY and provider settings"
     exit 1
 fi
 
 # Load environment variables
 source .env
 
+# Provider configuration
+LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
+USES_OLLAMA=false
+USES_OPENAI=false
+
+if [ "$LLM_PROVIDER" != "ollama" ] && [ "$LLM_PROVIDER" != "openai" ]; then
+    echo "❌ LLM_PROVIDER must be one of: ollama, openai"
+    exit 1
+fi
+
+if [ "$EMBEDDING_PROVIDER" != "ollama" ] && [ "$EMBEDDING_PROVIDER" != "openai" ] && [ "$EMBEDDING_PROVIDER" != "local" ]; then
+    echo "❌ EMBEDDING_PROVIDER must be one of: ollama, openai, local"
+    exit 1
+fi
+
+if [ "$LLM_PROVIDER" = "ollama" ] || [ "$EMBEDDING_PROVIDER" = "ollama" ]; then
+    USES_OLLAMA=true
+fi
+
+if [ "$LLM_PROVIDER" = "openai" ] || [ "$EMBEDDING_PROVIDER" = "openai" ]; then
+    USES_OPENAI=true
+fi
+
 # Check required environment variables
-if [ -z "$OLLAMA_BASE_URL" ]; then
-    echo "❌ OLLAMA_BASE_URL is not set in .env file"
+if [ "$USES_OLLAMA" = true ] && [ -z "$OLLAMA_BASE_URL" ]; then
+    echo "❌ OLLAMA_BASE_URL is required when LLM_PROVIDER or EMBEDDING_PROVIDER uses ollama"
+    exit 1
+fi
+
+if [ "$USES_OPENAI" = true ] && [ -z "$OPENAI_API_KEY" ]; then
+    echo "❌ OPENAI_API_KEY is required when LLM_PROVIDER or EMBEDDING_PROVIDER uses openai"
     exit 1
 fi
 
@@ -35,16 +64,16 @@ if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "your-secret-key-change-in-producti
     exit 1
 fi
 
-# Check Ollama connectivity
-echo "🔗 Checking Ollama connectivity..."
-if curl -f "${OLLAMA_BASE_URL}/api/tags" > /dev/null 2>&1; then
-    echo "✅ Ollama is accessible at ${OLLAMA_BASE_URL}"
-else
-    echo "❌ Ollama is not accessible at ${OLLAMA_BASE_URL}"
-    echo "   Please ensure Ollama is running and the models are available:"
-    echo "   • gemma3:270m"
-    echo "   • nomic-embed-text:latest"
-    exit 1
+# Check Ollama connectivity (only when needed)
+if [ "$USES_OLLAMA" = true ]; then
+    echo "🔗 Checking Ollama connectivity..."
+    if curl -f "${OLLAMA_BASE_URL}/api/tags" > /dev/null 2>&1; then
+        echo "✅ Ollama is accessible at ${OLLAMA_BASE_URL}"
+    else
+        echo "❌ Ollama is not accessible at ${OLLAMA_BASE_URL}"
+        echo "   Please ensure Ollama is running and the models are available."
+        exit 1
+    fi
 fi
 
 echo "✅ Environment configuration validated"
@@ -108,11 +137,26 @@ echo "   • Flower (Celery): http://localhost:5555"
 echo "   • Grafana (Metrics): http://localhost:3000 (admin/admin)"
 echo "   • Prometheus: http://localhost:9090"
 echo "   • Neo4j Browser: http://localhost:7474 (neo4j/secure_password)"
-echo "   • Ollama: ${OLLAMA_BASE_URL}"
+if [ "$USES_OLLAMA" = true ]; then
+    echo "   • Ollama: ${OLLAMA_BASE_URL}"
+fi
 echo ""
-echo "🤖 AI Models:"
-echo "   • LLM Model: ${OLLAMA_LLM_MODEL:-gemma3:270m}"
-echo "   • Embedding Model: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}"
+echo "🤖 AI Providers:"
+echo "   • LLM Provider: ${LLM_PROVIDER}"
+echo "   • Embedding Provider: ${EMBEDDING_PROVIDER}"
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    echo "   • LLM Model: ${OLLAMA_LLM_MODEL:-gemma3:270m}"
+elif [ "$LLM_PROVIDER" = "openai" ]; then
+    echo "   • LLM Model: ${OPENAI_LLM_MODEL:-gpt-5-nano}"
+fi
+
+if [ "$EMBEDDING_PROVIDER" = "ollama" ]; then
+    echo "   • Embedding Model: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}"
+elif [ "$EMBEDDING_PROVIDER" = "openai" ]; then
+    echo "   • Embedding Model: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}"
+elif [ "$EMBEDDING_PROVIDER" = "local" ]; then
+    echo "   • Embedding Model: all-MiniLM-L6-v2 (local)"
+fi
 echo ""
 echo "🔧 Management Commands:"
 echo "   • View logs: docker-compose -f infrastructure/docker/docker-compose.yml logs -f"
@@ -125,8 +169,11 @@ echo "   2. Register a user account"
 echo "   3. Start processing conversations and memories"
 echo "   4. Monitor performance in Grafana"
 echo ""
-echo "⚠️  Make sure Ollama is running with the required models:"
-echo "   ollama pull gemma3:270m"
-echo "   ollama pull nomic-embed-text:latest"
-echo ""
+if [ "$USES_OLLAMA" = true ]; then
+    echo "⚠️  Make sure Ollama is running with the required models:"
+    echo "   ollama pull ${OLLAMA_LLM_MODEL:-gemma3:270m}"
+    echo "   ollama pull ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}"
+    echo ""
+fi
+
 echo "Happy coding! 🚀"

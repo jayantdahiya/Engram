@@ -1,5 +1,7 @@
 """Core memory manager service implementing Engram architecture"""
 
+import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -42,13 +44,17 @@ class MemoryManager:
             # Generate embedding for user message
             user_embedding = await embedding_service.get_embedding(turn.user_message)
 
-            # Classify and execute memory operation
-            operation_result = await self._classify_and_execute_operation(
-                turn.user_message, user_embedding, turn.user_id, turn.conversation_id, db_session
+            # Execute the core memory write path and graph extraction in parallel.
+            operation_result, _ = await asyncio.gather(
+                self._classify_and_execute_operation(
+                    turn.user_message,
+                    user_embedding,
+                    turn.user_id,
+                    turn.conversation_id,
+                    db_session,
+                ),
+                self._extract_and_store_entities(turn.user_message, turn.user_id, db_session),
             )
-
-            # Extract entities for graph memory (Mem0g)
-            await self._extract_and_store_entities(turn.user_message, turn.user_id, db_session)
 
             # Determine memory operations
             memory_ops = [operation_result["operation"]]
@@ -128,23 +134,60 @@ class MemoryManager:
         text: str,
         embedding: np.ndarray,
         user_id: str,
-        conversation_id: str,
+        conversation_id: str | None,
         db_session: AsyncSession,
     ) -> dict[str, Any]:
         """Classify memory operation and execute it"""
 
         # Get existing memories for this user
         existing_memories = await self._get_user_memories(user_id, db_session, limit=50)
+        normalized_text = self._normalize_text(text)
+        content_hash = self._content_hash(normalized_text)
 
         if not existing_memories:
             # No existing memories - ADD operation
             memory_id = await self._add_memory(
-                text, embedding, user_id, conversation_id, db_session
+                text,
+                embedding,
+                user_id,
+                conversation_id,
+                db_session,
+                metadata={"content_hash": content_hash},
             )
             return {"operation": "ADD", "memory_id": memory_id, "memories_affected": 1}
 
+        # Fast dedupe check: exact text/hash match means NOOP.
+        for mem in existing_memories:
+            mem_text = getattr(mem, "text", "")
+            if self._normalize_text(mem_text) == normalized_text:
+                return {"operation": "NOOP", "memory_id": mem.id, "memories_affected": 0}
+            mem_hash = self._metadata_content_hash(getattr(mem, "metadata", None))
+            if mem_hash and mem_hash == content_hash:
+                return {"operation": "NOOP", "memory_id": mem.id, "memories_affected": 0}
+
+        # Fast semantic pre-check to avoid unnecessary LLM calls.
+        best_similarity = -1.0
+        best_memory = None
+        for mem in existing_memories:
+            mem_embedding = getattr(mem, "embedding", None)
+            if not mem_embedding:
+                continue
+            similarity = await embedding_service.calculate_similarity(
+                embedding, np.array(mem_embedding, dtype=np.float32)
+            )
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_memory = mem
+
+        if best_memory is not None and best_similarity >= 0.95:
+            return {"operation": "NOOP", "memory_id": best_memory.id, "memories_affected": 0}
+
+        if best_memory is not None and best_similarity >= 0.85:
+            await self._update_memory(best_memory.id, text, embedding, user_id, db_session)
+            return {"operation": "UPDATE", "memory_id": best_memory.id, "memories_affected": 1}
+
         # Use LLM to classify operation
-        existing_texts = [mem.text for mem in existing_memories]
+        existing_texts = [getattr(mem, "text", "") for mem in existing_memories]
         classification = await llm_service.classify_memory_operation(
             text, existing_texts, f"User: {user_id}"
         )
@@ -154,7 +197,12 @@ class MemoryManager:
 
         if operation == "ADD":
             memory_id = await self._add_memory(
-                text, embedding, user_id, conversation_id, db_session
+                text,
+                embedding,
+                user_id,
+                conversation_id,
+                db_session,
+                metadata={"content_hash": content_hash},
             )
             return {"operation": "ADD", "memory_id": memory_id, "memories_affected": 1}
 
@@ -192,15 +240,30 @@ class MemoryManager:
         text: str,
         embedding: np.ndarray,
         user_id: str,
-        conversation_id: str,
+        conversation_id: str | None,
         db_session: AsyncSession,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         """Add new memory entry"""
         try:
+            normalized_text = self._normalize_text(text)
+            content_hash = self._content_hash(normalized_text)
+            duplicate_memory_id = await self._find_duplicate_memory_id(
+                user_id=user_id,
+                text=text,
+                content_hash=content_hash,
+                db_session=db_session,
+            )
+            if duplicate_memory_id is not None:
+                return duplicate_memory_id
+
             # Check memory limit
             memory_count = await self._get_user_memory_count(user_id, db_session)
             if memory_count >= self.max_memories_per_user:
                 await self._cleanup_old_memories(user_id, db_session)
+
+            metadata_payload = dict(metadata or {})
+            metadata_payload["content_hash"] = content_hash
 
             # Create memory entry
             embedding_list = embedding.tolist()
@@ -212,7 +275,7 @@ class MemoryManager:
                 "timestamp": datetime.utcnow(),
                 "importance_score": 0.0,
                 "access_count": 0,
-                "metadata": json.dumps({}),
+                "metadata": json.dumps(metadata_payload),
             }
 
             # Insert into database (assuming you have a Memory model)
@@ -244,13 +307,14 @@ class MemoryManager:
         new_embedding: np.ndarray,
         user_id: str,
         db_session: AsyncSession,
-    ):
+    ) -> None:
         """Update existing memory with new information"""
         try:
             # Get existing memory
             result = await db_session.execute(
                 sa_text(
-                    "SELECT text, embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"
+                    "SELECT text, embedding, metadata "
+                    "FROM memories WHERE id = :memory_id AND user_id = :user_id"
                 ),
                 {"memory_id": memory_id, "user_id": user_id},
             )
@@ -269,20 +333,34 @@ class MemoryManager:
                 except json.JSONDecodeError:
                     existing_embedding = []
 
+            existing_metadata = existing.metadata
+            if isinstance(existing_metadata, str):
+                try:
+                    existing_metadata = json.loads(existing_metadata)
+                except json.JSONDecodeError:
+                    existing_metadata = {}
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+
             # Concatenate new information
-            updated_text = f"{existing.text}. {new_text}"
+            if self._normalize_text(new_text) in self._normalize_text(existing.text):
+                updated_text = existing.text
+            else:
+                updated_text = f"{existing.text}. {new_text}"
             updated_embedding = (np.array(existing_embedding) + new_embedding) / 2
+            existing_metadata["content_hash"] = self._content_hash(updated_text)
 
             # Update memory
             await db_session.execute(
                 sa_text("""
                 UPDATE memories
-                SET text = :text, embedding = :embedding, timestamp = :timestamp
+                SET text = :text, embedding = :embedding, metadata = :metadata, timestamp = :timestamp
                 WHERE id = :memory_id AND user_id = :user_id
                 """),
                 {
                     "text": updated_text,
                     "embedding": str(updated_embedding.tolist()),
+                    "metadata": json.dumps(existing_metadata),
                     "timestamp": datetime.utcnow(),
                     "memory_id": memory_id,
                     "user_id": user_id,
@@ -304,13 +382,14 @@ class MemoryManager:
         new_embedding: np.ndarray,
         user_id: str,
         db_session: AsyncSession,
-    ):
+    ) -> None:
         """Consolidate memory with temporal awareness"""
         try:
             # Get existing memory
             result = await db_session.execute(
                 sa_text(
-                    "SELECT embedding FROM memories WHERE id = :memory_id AND user_id = :user_id"
+                    "SELECT embedding, metadata "
+                    "FROM memories WHERE id = :memory_id AND user_id = :user_id"
                 ),
                 {"memory_id": memory_id, "user_id": user_id},
             )
@@ -329,18 +408,29 @@ class MemoryManager:
                 except json.JSONDecodeError:
                     existing_embedding = []
 
+            existing_metadata = existing.metadata
+            if isinstance(existing_metadata, str):
+                try:
+                    existing_metadata = json.loads(existing_metadata)
+                except json.JSONDecodeError:
+                    existing_metadata = {}
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+
             # Update with consolidated text
             updated_embedding = (np.array(existing_embedding) + new_embedding) / 2
+            existing_metadata["content_hash"] = self._content_hash(consolidated_text)
 
             await db_session.execute(
                 sa_text("""
                 UPDATE memories
-                SET text = :text, embedding = :embedding, timestamp = :timestamp
+                SET text = :text, embedding = :embedding, metadata = :metadata, timestamp = :timestamp
                 WHERE id = :memory_id AND user_id = :user_id
                 """),
                 {
                     "text": consolidated_text,
                     "embedding": str(updated_embedding.tolist()),
+                    "metadata": json.dumps(existing_metadata),
                     "timestamp": datetime.utcnow(),
                     "memory_id": memory_id,
                     "user_id": user_id,
@@ -354,6 +444,69 @@ class MemoryManager:
             await db_session.rollback()
             logger.error(f"Failed to consolidate memory: {e}")
             raise
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Normalize text for duplicate detection."""
+        return " ".join(text.lower().split())
+
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        """Generate stable content hash for deduplication."""
+        normalized = " ".join(text.lower().split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _metadata_content_hash(self, metadata: Any) -> str | None:
+        """Extract content hash from memory metadata payload if present."""
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(metadata, dict):
+            return None
+        content_hash = metadata.get("content_hash")
+        return content_hash if isinstance(content_hash, str) and content_hash else None
+
+    async def _find_duplicate_memory_id(
+        self,
+        *,
+        user_id: str,
+        text: str,
+        content_hash: str,
+        db_session: AsyncSession,
+        limit: int = 200,
+    ) -> int | None:
+        """Find exact duplicate memory via normalized text or stored content hash."""
+        result = await db_session.execute(
+            sa_text("""
+            SELECT id, text, metadata
+            FROM memories
+            WHERE user_id = :user_id
+            ORDER BY timestamp DESC
+            LIMIT :limit
+            """),
+            {"user_id": user_id, "limit": limit},
+        )
+
+        normalized_text = self._normalize_text(text)
+        for row in result.fetchall():
+            if self._normalize_text(row.text or "") == normalized_text:
+                return int(row.id)
+            row_hash = self._metadata_content_hash(row.metadata)
+            if row_hash == content_hash:
+                return int(row.id)
+        return None
+
+    @staticmethod
+    def _normalize_signal(values: np.ndarray) -> np.ndarray:
+        """Normalize non-semantic signals to [0, 1] while preserving zeros."""
+        if values.size == 0:
+            return values
+        max_value = float(np.max(values))
+        if max_value <= 0.0:
+            return np.zeros_like(values)
+        return values / max_value
 
     async def retrieve_memories(
         self, query: MemoryQuery, db_session: AsyncSession
@@ -379,6 +532,7 @@ class MemoryManager:
                 user_memories,
                 query.top_k,
                 query.similarity_threshold or self.similarity_threshold,
+                scoring_profile=query.scoring_profile,
             )
 
             # Update access counts
@@ -404,6 +558,7 @@ class MemoryManager:
         memories: list[Any],
         top_k: int,
         similarity_threshold: float,
+        scoring_profile: str = "balanced",
     ) -> list[Any]:
         """ACAN (Attention-based Context-Aware Network) retrieval"""
 
@@ -429,15 +584,24 @@ class MemoryManager:
             [self._recency_weight(mem.timestamp.timestamp(), current_time) for mem in memories]
         )
 
-        importance_scores = np.array([mem.importance_score for mem in memories])
-
-        # Weighted combination
-        composite_scores = (
-            0.40 * attention_scores
-            + 0.40 * cosine_scores
-            + 0.10 * recency_weights
-            + 0.10 * importance_scores
+        importance_weights = self._normalize_signal(
+            np.array([float(mem.importance_score or 0.0) for mem in memories], dtype=np.float32)
         )
+        access_weights = self._normalize_signal(
+            np.array([float(mem.access_count or 0.0) for mem in memories], dtype=np.float32)
+        )
+
+        if scoring_profile == "semantic":
+            # Benchmark/QA profile: rely only on semantic relevance signals.
+            composite_scores = 0.55 * cosine_scores + 0.45 * attention_scores
+        else:
+            composite_scores = (
+                0.40 * cosine_scores
+                + 0.30 * attention_scores
+                + 0.05 * recency_weights
+                + 0.15 * importance_weights
+                + 0.10 * access_weights
+            )
 
         # Filter by threshold and get top-k
         valid_indices = np.where(composite_scores >= similarity_threshold)[0]
@@ -463,12 +627,16 @@ class MemoryManager:
             similarities.append(similarity)
 
         similarities = np.array(similarities)
-        # Softmax normalization
-        exp_scores = np.exp(similarities - np.max(similarities))
-        return exp_scores / np.sum(exp_scores)
+        if similarities.size == 0:
+            return similarities
+        min_score = float(np.min(similarities))
+        max_score = float(np.max(similarities))
+        if np.isclose(max_score, min_score):
+            return np.ones_like(similarities)
+        return (similarities - min_score) / (max_score - min_score)
 
     def _recency_weight(
-        self, timestamp: float, current_time: float, half_life_hours: float = 72.0
+        self, timestamp: float, current_time: float, half_life_hours: float = 8760.0
     ) -> float:
         """Calculate recency weight with exponential decay"""
         age_hours = max(0.0, (current_time - timestamp) / 3600.0)

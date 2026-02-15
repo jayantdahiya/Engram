@@ -1,9 +1,9 @@
 """Pydantic models for memory operations"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class MemoryEntryBase(BaseModel):
@@ -43,8 +43,15 @@ class MemoryEntryResponse(MemoryEntryBase):
     access_count: int = Field(default=0, description="Number of times this memory was accessed")
     embedding_dimension: int = Field(..., description="Dimension of the embedding vector")
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def _coerce_conversation_id(cls, v: Any) -> str | None:
+        """Coerce UUID objects from PostgreSQL to plain strings."""
+        if v is None:
+            return None
+        return str(v)
 
 
 class MemoryQuery(BaseModel):
@@ -55,6 +62,12 @@ class MemoryQuery(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50, description="Number of top memories to retrieve")
     similarity_threshold: float | None = Field(
         None, ge=0.0, le=1.0, description="Minimum similarity threshold"
+    )
+    scoring_profile: Literal["balanced", "semantic"] = Field(
+        default="balanced",
+        description="Retrieval scoring profile. "
+        "'balanced' blends semantic + behavioral signals, "
+        "'semantic' uses only semantic relevance signals.",
     )
 
 
@@ -118,7 +131,8 @@ class EmbeddingRequest(BaseModel):
 
     text: str = Field(..., description="Text to generate embedding for")
     model: str | None = Field(
-        default="text-embedding-ada-002", description="Embedding model to use"
+        default=None,
+        description="Optional embedding model override (defaults to provider-configured model)",
     )
 
 

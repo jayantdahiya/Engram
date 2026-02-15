@@ -43,7 +43,12 @@ async def create_memory(
 
         # Create memory entry
         memory_id = await memory_manager._add_memory(
-            memory_data.text, embedding, current_user, memory_data.conversation_id, db_session
+            memory_data.text,
+            embedding,
+            current_user,
+            memory_data.conversation_id,
+            db_session,
+            metadata=memory_data.metadata,
         )
 
         # Get created memory

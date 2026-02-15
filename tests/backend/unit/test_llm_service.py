@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from services.llm_service import LLMService, OllamaProvider, OpenAIProvider
+from services.llm_service import (
+    GoogleAIProvider,
+    LLMService,
+    OllamaProvider,
+    OpenAIProvider,
+)
 
 
 class TestOllamaProvider:
@@ -80,6 +85,84 @@ class TestOpenAIProvider:
             result = await openai_provider.generate_response(messages)
 
             assert result == "OpenAI response"
+
+
+class TestGoogleAIProvider:
+    """Test cases for GoogleAIProvider."""
+
+    @pytest.fixture
+    def google_provider(self):
+        """Create Google AI provider instance."""
+        with patch("services.llm_service.settings") as mock_settings:
+            mock_settings.google_api_key = "test-google-key"
+            mock_settings.google_llm_model = "gemini-3-flash"
+            return GoogleAIProvider()
+
+    @pytest.mark.asyncio
+    async def test_generate_response_success(self, google_provider):
+        """Test successful response generation with Gemini API."""
+        mock_response = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Gemini response"}],
+                        "role": "model",
+                    }
+                }
+            ]
+        }
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            mock_instance.post.return_value = MagicMock(
+                json=lambda: mock_response, raise_for_status=MagicMock()
+            )
+
+            messages = [
+                {"role": "system", "content": "You are helpful"},
+                {"role": "user", "content": "Hello"},
+            ]
+            result = await google_provider.generate_response(messages)
+
+            assert result == "Gemini response"
+
+    @pytest.mark.asyncio
+    async def test_generate_response_no_api_key(self):
+        """Test error when API key is missing."""
+        with patch("services.llm_service.settings") as mock_settings:
+            mock_settings.google_api_key = ""
+            mock_settings.google_llm_model = "gemini-3-flash"
+            provider = GoogleAIProvider()
+
+        with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+            await provider.generate_response([{"role": "user", "content": "Hello"}])
+
+    def test_convert_messages(self, google_provider):
+        """Test OpenAI-to-Gemini message format conversion."""
+        messages = [
+            {"role": "system", "content": "Be helpful"},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "How are you?"},
+        ]
+        contents, system_instruction = google_provider._convert_messages(messages)
+
+        assert system_instruction == {"parts": [{"text": "Be helpful"}]}
+        assert len(contents) == 3
+        assert contents[0]["role"] == "user"
+        assert contents[1]["role"] == "model"
+        assert contents[2]["role"] == "user"
+
+    def test_init_provider_google(self):
+        """Test LLMService initializes GoogleAIProvider for 'google'."""
+        with patch("services.llm_service.settings") as mock_settings:
+            mock_settings.llm_provider = "google"
+            mock_settings.google_api_key = "test-key"
+            mock_settings.google_llm_model = "gemini-3-flash"
+            service = LLMService()
+
+        assert isinstance(service.provider, GoogleAIProvider)
 
 
 class TestLLMService:

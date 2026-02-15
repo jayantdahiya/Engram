@@ -14,6 +14,7 @@ class TestMCPTools:
         client = AsyncMock()
         client.process_turn = AsyncMock()
         client.query_memories = AsyncMock()
+        client.generate_answer = AsyncMock()
         client.create_memory = AsyncMock()
         client.delete_memory = AsyncMock()
         client.get_stats = AsyncMock()
@@ -249,6 +250,39 @@ class TestMCPTools:
             )
 
         assert "Memory created with ID: 5" in result
+
+    @pytest.mark.asyncio
+    async def test_answer_tool(self, mock_context, mock_client):
+        """Test answer tool combines recall with LLM answer extraction."""
+        from fastmcp import FastMCP
+        from engram_mcp.tools import register_tools
+
+        mock_client.query_memories.return_value = {
+            "memories": [
+                {"id": 1, "text": "Caroline went on 7 May 2023.", "importance_score": 5.0}
+            ],
+            "total_found": 1,
+        }
+        mock_client.generate_answer.return_value = "7 May 2023"
+
+        mcp = FastMCP(name="test")
+        register_tools(mcp)
+
+        answer_tool = None
+        for tool in mcp._tool_manager._tools.values():
+            if tool.name == "answer":
+                answer_tool = tool
+                break
+
+        assert answer_tool is not None
+
+        with patch("engram_mcp.tools._get_client", return_value=mock_client):
+            result = await answer_tool.fn(
+                question="When did Caroline go?",
+                ctx=mock_context,
+            )
+
+        assert result == "7 May 2023"
 
     @pytest.mark.asyncio
     async def test_forget_tool(self, mock_context, mock_client):

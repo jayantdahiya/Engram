@@ -14,6 +14,8 @@ dependencies = [
 
 [project.scripts]
 engram-mcp = "engram_mcp.server:main"
+engram-mcp-benchmark = "engram_mcp.benchmark:main"
+engram-mcp-locomo-benchmark = "engram_mcp.locomo_benchmark:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/engram_mcp"]

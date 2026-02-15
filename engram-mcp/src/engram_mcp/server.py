@@ -14,6 +14,7 @@ INSTRUCTIONS = (
     "Engram gives you persistent long-term memory across conversations. "
     "Use 'remember' to store important facts from the current conversation. "
     "Use 'recall' to search your memories before answering questions. "
+    "Use 'answer' to recall and extract a concise answer from memory context. "
     "Use 'store_memory' for direct memory creation with explicit importance. "
     "Use 'forget' to delete outdated or incorrect memories. "
     "Use 'memory_stats' to see an overview of stored memories. "

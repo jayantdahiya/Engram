@@ -240,6 +240,32 @@ class TestEngramClient:
         assert len(result["memories"]) == 1
 
     @pytest.mark.asyncio
+    async def test_query_memories_with_scoring_profile(self, client_config, mock_http_client):
+        """Test querying memories with explicit scoring profile."""
+        from engram_mcp.client import EngramClient
+
+        mock_response = {
+            "query": "What do I like?",
+            "memories": [],
+            "total_found": 0,
+            "processing_time_ms": 12.0,
+        }
+        mock_http_client.post.return_value = MagicMock(
+            json=lambda: mock_response, raise_for_status=MagicMock()
+        )
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+
+        await client.query_memories("What do I like?", top_k=5, scoring_profile="semantic")
+
+        called_json = mock_http_client.post.call_args.kwargs["json"]
+        assert called_json["scoring_profile"] == "semantic"
+
+    @pytest.mark.asyncio
     async def test_query_memories_falls_back_on_server_error(
         self, client_config, mock_http_client
     ):
@@ -274,7 +300,7 @@ class TestEngramClient:
 
         assert result["fallback_used"] is True
         assert len(result["memories"]) == 1
-        assert result["memories"][0]["id"] == 1
+        assert result["memories"][0]["id"] == 2
 
     @pytest.mark.asyncio
     async def test_create_memory_success(self, client_config, mock_http_client):
@@ -398,11 +424,42 @@ class TestEngramClient:
         assert client._conversation_map["external-conv"] == "backend-conv-456"
 
     @pytest.mark.asyncio
-    async def test_process_turn_falls_back_on_timeout(self, client_config, mock_http_client):
-        """Test process_turn degrades to direct store when the endpoint times out."""
+    async def test_process_turn_raises_on_timeout_by_default(
+        self, client_config, mock_http_client
+    ):
+        """Test process_turn does not perform unsafe fallback on timeout by default."""
         from engram_mcp.client import EngramClient
 
         mock_http_client.post.side_effect = httpx.ReadTimeout("read timeout")
+        mock_http_client.get.return_value = MagicMock(
+            json=lambda: [],
+            raise_for_status=MagicMock(),
+        )
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+        client.create_memory = AsyncMock(return_value={"id": 77})
+
+        with pytest.raises(httpx.ReadTimeout):
+            await client.process_turn("I love pizza", "conv-1")
+
+        client.create_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_turn_recovers_memory_after_timeout(
+        self, client_config, mock_http_client
+    ):
+        """Test timeout recovery returns existing memory id without writing again."""
+        from engram_mcp.client import EngramClient
+
+        mock_http_client.post.side_effect = httpx.ReadTimeout("read timeout")
+        mock_http_client.get.return_value = MagicMock(
+            json=lambda: [{"id": 88, "text": "I love pizza"}],
+            raise_for_status=MagicMock(),
+        )
 
         client = EngramClient(**client_config)
         client._http = mock_http_client
@@ -412,6 +469,41 @@ class TestEngramClient:
         client.create_memory = AsyncMock(return_value={"id": 77})
 
         result = await client.process_turn("I love pizza", "conv-1")
+
+        assert result["operation_performed"] == "ADD"
+        assert result["memory_id"] == 88
+        assert result["recovered_from_ambiguous_failure"] is True
+        client.create_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_turn_unsafe_fallback_on_timeout_when_enabled(
+        self, client_config, mock_http_client
+    ):
+        """Test legacy timeout fallback can be enabled explicitly via env var."""
+        from engram_mcp.client import EngramClient
+
+        mock_http_client.post.side_effect = httpx.ReadTimeout("read timeout")
+        mock_http_client.get.return_value = MagicMock(
+            json=lambda: [],
+            raise_for_status=MagicMock(),
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "ENGRAM_UNSAFE_PROCESS_TURN_FALLBACK": "true",
+                "ENGRAM_PROCESS_TURN_RECOVERY_ATTEMPTS": "1",
+            },
+            clear=False,
+        ):
+            client = EngramClient(**client_config)
+            client._http = mock_http_client
+            client._token = "valid_token"
+            client._token_expires_at = time.time() + 3600
+            client._user_id = "user-123"
+            client.create_memory = AsyncMock(return_value={"id": 77})
+
+            result = await client.process_turn("I love pizza", "conv-1")
 
         assert result["operation_performed"] == "ADD"
         assert result["memory_id"] == 77
@@ -485,6 +577,30 @@ class TestEngramClient:
         result = await client.health_check()
 
         assert result["status"] == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_generate_answer_ollama_success(self, client_config):
+        """Test answer generation via Ollama provider."""
+        from engram_mcp.client import EngramClient
+
+        response = MagicMock(
+            json=lambda: {"message": {"content": "7 May 2023"}},
+            raise_for_status=MagicMock(),
+        )
+        external_client = AsyncMock()
+        external_client.post.return_value = response
+        cm = AsyncMock()
+        cm.__aenter__.return_value = external_client
+        cm.__aexit__.return_value = False
+
+        client = EngramClient(**client_config)
+        with patch("engram_mcp.client.httpx.AsyncClient", return_value=cm):
+            answer = await client.generate_answer(
+                "When did Caroline go?",
+                ["Caroline went on 7 May 2023 to the support group."],
+            )
+
+        assert answer == "7 May 2023"
 
     def test_auth_headers(self, client_config):
         """Test auth headers generation."""

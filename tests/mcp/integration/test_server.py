@@ -16,6 +16,7 @@ class TestMCPServer:
         client.stop = AsyncMock()
         client.process_turn = AsyncMock()
         client.query_memories = AsyncMock()
+        client.generate_answer = AsyncMock()
         client.get_stats = AsyncMock()
         client.health_check = AsyncMock()
         return client
@@ -84,6 +85,7 @@ class TestMCPServer:
         expected_tools = [
             "remember",
             "recall",
+            "answer",
             "store_memory",
             "forget",
             "memory_stats",

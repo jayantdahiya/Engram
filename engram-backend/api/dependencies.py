@@ -15,6 +15,8 @@ async def get_database_session() -> AsyncGenerator[AsyncSession, None]:
     async with get_db_session() as session:
         try:
             yield session
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Database session error: {e}")
             raise HTTPException(
@@ -28,6 +30,8 @@ async def get_neo4j_dependency():
     try:
         async with get_neo4j_session() as session:
             yield session
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Neo4j session error: {e}")
         raise HTTPException(
@@ -40,6 +44,8 @@ async def get_redis_dependency():
     try:
         redis_client = await get_redis()
         yield redis_client
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Redis connection error: {e}")
         raise HTTPException(

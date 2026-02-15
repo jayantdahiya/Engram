@@ -3,6 +3,7 @@
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 
@@ -239,6 +240,43 @@ class TestEngramClient:
         assert len(result["memories"]) == 1
 
     @pytest.mark.asyncio
+    async def test_query_memories_falls_back_on_server_error(
+        self, client_config, mock_http_client
+    ):
+        """Test query fallback to list endpoint when semantic query fails."""
+        from engram_mcp.client import EngramClient
+
+        failed_http_response = MagicMock(status_code=500)
+        failed_response = MagicMock()
+        failed_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 error",
+            request=MagicMock(),
+            response=failed_http_response,
+        )
+        fallback_response = MagicMock(
+            json=lambda: [
+                {"id": 1, "text": "I like tennis", "importance_score": 3.0},
+                {"id": 2, "text": "I like Python", "importance_score": 5.0},
+            ],
+            raise_for_status=MagicMock(),
+        )
+
+        mock_http_client.post.return_value = failed_response
+        mock_http_client.get.return_value = fallback_response
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+
+        result = await client.query_memories("What sports do I like?", top_k=1)
+
+        assert result["fallback_used"] is True
+        assert len(result["memories"]) == 1
+        assert result["memories"][0]["id"] == 1
+
+    @pytest.mark.asyncio
     async def test_create_memory_success(self, client_config, mock_http_client):
         """Test creating a memory directly."""
         from engram_mcp.client import EngramClient
@@ -267,6 +305,117 @@ class TestEngramClient:
 
         assert result["id"] == 1
         assert result["text"] == "I am a software engineer"
+
+    @pytest.mark.asyncio
+    async def test_process_turn_recovers_invalid_conversation_id(
+        self, client_config, mock_http_client
+    ):
+        """Test process_turn auto-creates a valid conversation for unknown IDs."""
+        from engram_mcp.client import EngramClient
+
+        failed_http_response = MagicMock(status_code=500)
+        failed_response = MagicMock()
+        failed_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 error",
+            request=MagicMock(),
+            response=failed_http_response,
+        )
+        create_conversation_response = MagicMock(
+            json=lambda: {"id": "backend-conv-123"},
+            raise_for_status=MagicMock(),
+        )
+        retry_response = MagicMock(
+            json=lambda: {
+                "turn_id": "turn-123",
+                "operation_performed": "ADD",
+                "memory_id": 9,
+                "memories_affected": 1,
+                "processing_time_ms": 12.0,
+            },
+            raise_for_status=MagicMock(),
+        )
+
+        mock_http_client.post.side_effect = [
+            failed_response,
+            create_conversation_response,
+            retry_response,
+        ]
+        mock_http_client.get.return_value = MagicMock(status_code=404)
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+
+        result = await client.process_turn("I love pizza", "external-conv")
+
+        assert result["memory_id"] == 9
+        assert client._conversation_map["external-conv"] == "backend-conv-123"
+
+    @pytest.mark.asyncio
+    async def test_create_memory_recovers_invalid_conversation_id(
+        self, client_config, mock_http_client
+    ):
+        """Test create_memory auto-creates a valid conversation for unknown IDs."""
+        from engram_mcp.client import EngramClient
+
+        failed_http_response = MagicMock(status_code=500)
+        failed_response = MagicMock()
+        failed_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 error",
+            request=MagicMock(),
+            response=failed_http_response,
+        )
+        create_conversation_response = MagicMock(
+            json=lambda: {"id": "backend-conv-456"},
+            raise_for_status=MagicMock(),
+        )
+        retry_response = MagicMock(
+            json=lambda: {"id": 12, "text": "Remember this"},
+            raise_for_status=MagicMock(),
+        )
+
+        mock_http_client.post.side_effect = [
+            failed_response,
+            create_conversation_response,
+            retry_response,
+        ]
+        mock_http_client.get.return_value = MagicMock(status_code=404)
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+
+        result = await client.create_memory(
+            text="Remember this",
+            conversation_id="external-conv",
+        )
+
+        assert result["id"] == 12
+        assert client._conversation_map["external-conv"] == "backend-conv-456"
+
+    @pytest.mark.asyncio
+    async def test_process_turn_falls_back_on_timeout(self, client_config, mock_http_client):
+        """Test process_turn degrades to direct store when the endpoint times out."""
+        from engram_mcp.client import EngramClient
+
+        mock_http_client.post.side_effect = httpx.ReadTimeout("read timeout")
+
+        client = EngramClient(**client_config)
+        client._http = mock_http_client
+        client._token = "valid_token"
+        client._token_expires_at = time.time() + 3600
+        client._user_id = "user-123"
+        client.create_memory = AsyncMock(return_value={"id": 77})
+
+        result = await client.process_turn("I love pizza", "conv-1")
+
+        assert result["operation_performed"] == "ADD"
+        assert result["memory_id"] == 77
+        assert result["fallback_used"] is True
 
     @pytest.mark.asyncio
     async def test_delete_memory_success(self, client_config, mock_http_client):
